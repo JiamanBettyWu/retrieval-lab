@@ -6,6 +6,9 @@ build-backend = "hatchling.build"
 name = "retrieval-lab"
 version = "0.1.0"
 description = "A two-stage RAG retriever, LoRA-fine-tuned, measured on BEIR at every step"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Jiaman Wu" }]
 requires-python = ">=3.10"
 dependencies = [
     "sentence-transformers>=3.0",
