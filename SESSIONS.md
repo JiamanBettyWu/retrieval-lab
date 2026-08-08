@@ -6,6 +6,81 @@ done, what was decided and why. History only; for what to do next see
 
 ---
 
+## 2026-08-08 (Phase 1 scaffolded; why reranking precedes the recall work)
+
+Continuation of the 2026-08-07 session below. No metrics moved; this was
+interpretation plus a scaffold. Commit `847fb53`.
+
+**Reading the oracle result correctly — the numbers that explain it.** Betty
+asked whether Recall@100 0.3115 and oracle NDCG@10 0.6263 could be reconciled as
+"recall is poor but the top-10 is found well." Half right. Pulled the actual
+distribution of *retrieved-relevant* docs per query:
+
+```
+relevant docs per query       : median 16   mean 38.2
+of those, retrieved in top-100: median  3   mean  8.0
+queries with >=10 retrieved-relevant : 88/323
+queries with  0 retrieved-relevant   : 51/323
+```
+
+So retrieval is **not** finding the top-10 well — the median query has only 3 of
+its relevant docs anywhere in the 100-doc pool. The reconciliation is that the
+two metrics have **different denominators**. Recall@100 is judged against every
+relevant doc (median 16, mean 38); NDCG@10's IDCG counts only the best 10, so
+everything beyond ten slots is free. The log discount compounds it: summing
+`1/log2(rank+1)` over 10 slots gives 4.544, of which ranks 1–3 alone contribute
+2.131 — **the top three positions carry 47% of all NDCG@10 weight.** Three
+relevant docs, perfectly placed, capture roughly half the achievable score.
+That is why a thin candidate pool still yields a 0.63 ceiling.
+
+**51 of 323 queries (16%) have zero relevant docs in the top-100.** The oracle
+scores 0.0 on those and no reranker can ever help them — a hard, quotable cap on
+Phase 1. It also sharpens Phase 2's framing: recall work is *not* uniformly
+valuable, and its single biggest win is dragging queries out of that zero
+bucket, since each one moves from a guaranteed 0.0 to something positive. Worth
+tracking that count as a Phase 2 metric alongside NDCG.
+
+**Decision: do NOT reorder the phases.** Betty's follow-up was whether retrieval
+quality should be improved before reranking. Pushed back, and the oracle is the
+evidence: +0.3104 of NDCG@10 is available from reordering *the candidates as
+they are today*, so improving retrieval first doesn't unlock that gain — it only
+delays collecting it. The two levers compose rather than sequence (better
+retrieval raises the ceiling a reranker works under; it doesn't replace the
+reranker). Three supporting reasons: cost asymmetry (a pretrained cross-encoder
+is an afternoon, LoRA fine-tuning is days), the ablation needs a rerank-alone row
+to stay interpretable, and Phase 1 de-risks Phase 2 — if the cross-encoder
+underdelivers against its ceiling, the two-stage architecture itself is in
+question and you'd want to know that before spending days training. The kernel
+Betty was right about: recall is the bigger *long-run* constraint (0.3737
+unreachable vs 0.3104 reachable), which is exactly what Phase 2 exists for.
+
+**Scaffolded Phase 1** (`src/retrieval_lab/rerank.py`, `tests/test_rerank.py`).
+`rerank()` is left as a `TODO(human)` with a four-step docstring — Betty is
+implementing it herself, same handover pattern as `retrieve()` on 2026-07-15.
+Everything around it is wired: `main()` loads the cached candidates, reranks,
+and prints Phase 0 / Phase 1 / ceiling side by side plus **the percentage of
+available headroom captured**, so the result gets read against 0.6263 rather
+than 1.0. `--limit N` reranks a subset for fast iteration and warns that those
+numbers aren't ablation-comparable. The test suite is deliberately red until the
+function lands (10 errors, all `NotImplementedError` — verified nothing else
+breaks). Its fixture stacks the deck: the correct doc starts *last* in the input
+ordering and every relevant doc was retrieved, so a correct reranker scores
+exactly 1.0. Tests target the two traps expected here — pairs built as
+`(doc, query)` instead of `(query, doc)`, which passes every shape check while
+silently degrading ranking; and truncating to the top 10, which collapses
+Recall@100 and breaks comparability with the Phase 0 row.
+
+**Non-obvious:** the cross-encoder shares the MiniLM-L6 backbone with the Phase 0
+bi-encoder but is a different model *type* — it emits one score per (query, doc)
+pair and produces no reusable embedding, which is why it cannot do first-stage
+retrieval (scoring the full corpus would be ~1.2M forward passes against ~32K
+over the cached top-100). `cross-encoder/ms-marco-MiniLM-L-6-v2` downloads on
+first use; the test run already pulled it. Its outputs are **logits** —
+unbounded, often negative, not comparable to Phase 0's cosine scores. Fine for
+ranking since BEIR reads only the order.
+
+---
+
 ## 2026-08-07, later (Phase 1 ceiling measured, D3 resolved, src/ restructure)
 
 Same working day as the entry below, which closed out Phase 0. This half

@@ -4,22 +4,25 @@ Forward-looking state. Session history lives in [SESSIONS.md](SESSIONS.md).
 
 ## Current state
 
-**As of 2026-08-07 (latest session):** Phase 0 is green and **D3 is resolved —
-build Phase 1**: the oracle rerank puts the ceiling at **NDCG@10 0.6263** vs a
-0.3159 baseline, so +0.3104 of headroom is genuinely available to a
-cross-encoder. Retrieval is now cached (`cache/`), the repo was restructured
-into an installable `src/retrieval_lab` package with `pytest` suites, and
-`CLAUDE.md` was initialized. All work is pushed (`main` == `origin/main` at
-`7416124`); the repo is still **private** — see D4. Detail in
-[SESSIONS.md](SESSIONS.md).
+**As of 2026-08-08 (latest session):** Phase 0 is green and **D3 is resolved —
+build Phase 1**: the oracle puts the ceiling at **NDCG@10 0.6263** vs a 0.3159
+baseline, so +0.3104 of headroom is available to a cross-encoder. Phase 1 is now
+**scaffolded with `rerank()` left as a `TODO(human)` for Betty to implement**
+(`847fb53`) — see "Pick up here". All work is pushed (`main` == `origin/main`);
+the repo is still **private** — see D4. Detail in [SESSIONS.md](SESSIONS.md).
 
-Run commands changed this session:
+> ⚠️ **`pytest` is currently RED on purpose** — 22 pass, 10 error with
+> `NotImplementedError` from the unimplemented `rerank()`. Nothing is broken.
+> It goes fully green when that function lands.
+
+Setup and run commands (the repo became an installable package on 2026-08-07):
 
 ```bash
-uv pip install -e '.[dev]'                            # from the repo root
+uv pip install -e '.[dev]'                            # from the repo root, always
 pytest
-python -m retrieval_lab.evaluate --dataset nfcorpus
-python -m retrieval_lab.oracle   --dataset nfcorpus
+python -m retrieval_lab.evaluate --dataset nfcorpus   # baseline    0.3159
+python -m retrieval_lab.oracle   --dataset nfcorpus   # ceiling     0.6263
+python -m retrieval_lab.rerank   --dataset nfcorpus   # Phase 1 — needs rerank()
 ```
 
 ## Open decisions

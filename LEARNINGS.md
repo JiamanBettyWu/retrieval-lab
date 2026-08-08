@@ -35,3 +35,30 @@ So the low recall is real, and "raise recall" is a genuine lever. But the same
 calculation shows **Recall@10 caps at 0.615** — worth knowing before reporting it
 in an ablation table against an implied 1.0. Any metric with k in its name has a
 denominator worth checking before you interpret it.
+
+## 2026-08-08 — two metrics disagreeing usually means two denominators
+Recall@100 0.3115 and oracle NDCG@10 0.6263 look contradictory — poor retrieval,
+decent ranking — until you notice they measure against different targets.
+Recall@100 is judged against *every* relevant doc (median 16 per query, mean 38).
+NDCG@10's IDCG counts only the best 10, so everything past ten slots is free. The
+log discount widens the gap further: over 10 slots `1/log2(rank+1)` sums to 4.544,
+and ranks 1–3 alone contribute 2.131 — **the top three positions carry 47% of all
+NDCG@10 weight.** So the median query, with only 3 of its relevant docs anywhere
+in the top-100, can still reach ~0.63 once those three are placed first.
+
+The corollary is the useful part: a low metric is not automatically the thing to
+fix. 51 of 323 queries have *zero* relevant docs in the top-100 and score 0.0 no
+matter how good the reranker gets, while 88 already hold enough to fill a perfect
+top-10. Recall work isn't uniformly valuable — its concentrated win is emptying
+that zero bucket. Averages hide which queries the work would actually help.
+
+## 2026-08-08 — build the cheap lever first when levers compose
+Tempting conclusion from the above: retrieval is the real problem, so fix it
+before reranking. Wrong ordering. The +0.3104 of headroom is available from
+reordering *today's* candidates, so improving retrieval first doesn't unlock that
+gain — it delays collecting it. The two levers compose (better retrieval raises
+the ceiling a reranker operates under; it never replaces the reranker), and when
+levers compose, order them by cost-to-value: a pretrained cross-encoder is an
+afternoon, LoRA fine-tuning is days. Cheap-first also de-risks — if the reranker
+underdelivers against a ceiling you already measured, the architecture itself is
+in question, and that's worth knowing before spending days training.
