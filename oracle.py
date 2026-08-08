@@ -19,6 +19,7 @@ returned. The oracle can permute the numerator; it cannot recover those.
 """
 import argparse
 import logging
+import math
 
 from beir.retrieval.evaluation import EvaluateRetrieval
 
@@ -50,6 +51,35 @@ def oracle_rerank(results: dict, qrels: dict) -> dict:
         reranked[query_id] = {doc_id: 1.0 - i / n for i, doc_id in enumerate(ordered)}
 
     return reranked
+
+
+def arithmetic_ceiling(results: dict, qrels: dict, k: int = 10) -> float:
+    """Mean NDCG@k computed from first principles, bypassing oracle_rerank().
+
+    Independent of the sort under test: for each query, take the grades of the
+    retrieved-relevant docs, place the best k at ranks 1..k, and divide by
+    IDCG@k over the *full* qrels. Any correct oracle must equal this exactly.
+
+    This is the check `oracle >= baseline` structurally cannot make — that
+    invariant holds for any improvement, including one that leaves gain on the
+    table. Only this one says the oracle is *optimal*.
+    """
+    dcg = lambda grades: sum(g / math.log2(i + 2) for i, g in enumerate(grades))
+
+    total, n = 0.0, 0
+    for query_id, grades in qrels.items():
+        if query_id not in results:
+            continue
+        ideal = dcg(sorted(grades.values(), reverse=True)[:k])
+        if ideal == 0:
+            continue
+        # `d != query_id` mirrors BEIR's default ignore_identical_ids.
+        retrieved = sorted((grades.get(d, 0) for d in results[query_id] if d != query_id),
+                           reverse=True)[:k]
+        total += dcg(retrieved) / ideal
+        n += 1
+
+    return total / n if n else 0.0
 
 
 def per_query_ndcg(qrels: dict, run: dict, k: int) -> dict:
@@ -88,6 +118,15 @@ def main(dataset: str, top_k: int, refresh: bool) -> None:
             f"(e.g. {regressions[:3]}) — the sort or the score assignment is wrong."
         )
     log.info("sanity check: oracle >= baseline on all %d queries", len(base_pq))
+
+    # ... and the stronger one: is it OPTIMAL, not merely better?
+    ceiling = arithmetic_ceiling(results, qrels, 10)
+    if abs(orc_ndcg["NDCG@10"] - ceiling) > 1e-4:
+        raise AssertionError(
+            f"oracle NDCG@10 {orc_ndcg['NDCG@10']:.6f} != arithmetic ceiling "
+            f"{ceiling:.6f} — the oracle is leaving gain on the table."
+        )
+    log.info("sanity check: oracle == arithmetic ceiling (%.6f) — provably optimal", ceiling)
 
     b, o = base_ndcg["NDCG@10"], orc_ndcg["NDCG@10"]
     headroom = o - b

@@ -68,6 +68,18 @@ a 98% relative gain over baseline** — meaning the bi-encoder's top-100 already
 is precisely the failure a cross-encoder repairs. The remaining `1 − 0.6263 =
 0.3737` is unreachable by any reranker; it's recall, and it belongs to Phase 2.
 
+Recall@10 says it more plainly: reordering alone lifts it **0.155 → 0.276**,
+nearly to Recall@100's 0.3115. Almost every relevant document the retriever
+found is *already in the top-100 but buried below rank 10*; perfect ordering
+pulls essentially all of them into the top 10.
+
+`oracle.py` asserts two invariants on every run: that the oracle beats the
+baseline on each query individually, and — the stronger claim — that its score
+equals an **arithmetic ceiling derived independently of the sort under test**
+(`0.626292`, matching to floating point). The first alone would pass for any
+improvement, including one leaving gain on the table; only the second
+establishes that `0.6263` is genuinely the maximum.
+
 ### Phase 0 headroom verdict — proceed
 
 - **NDCG@10 0.316** — far below 1.0, so a reranker has room to show lift.
