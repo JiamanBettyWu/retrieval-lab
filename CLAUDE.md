@@ -14,6 +14,8 @@ pytest -k "keys_are_real" -q               # one test
 
 python -m retrieval_lab.evaluate --dataset nfcorpus   # baseline metrics + headroom check
 python -m retrieval_lab.oracle   --dataset nfcorpus   # the ceiling a reranker could reach
+python -m retrieval_lab.rerank   --dataset nfcorpus   # Phase 1 cross-encoder rerank
+python -m retrieval_lab.rerank   --dataset nfcorpus --breakdown   # + the per-bucket analysis
 ```
 
 **Always run from the repo root.** `data/` (BEIR downloads) and `cache/`
@@ -33,7 +35,7 @@ a labeled benchmark instead of asserting it.** The deliverable is a growing
 ablation table with real movement in it, not a working demo. `docs/plan.md` is
 the multi-phase design doc; read it before proposing architectural changes.
 
-Phases: **0** baseline bi-encoder (done) · **1** cross-encoder rerank ·
+Phases: **0** baseline bi-encoder (done) · **1** cross-encoder rerank (done) ·
 **2** LoRA-fine-tune the encoder on MS MARCO, evaluate zero-shot on the untouched
 BEIR set · **3** wiki demo UI · **4** LLM-as-judge generation eval.
 
@@ -46,8 +48,16 @@ query → [bi-encoder] cosine top-100 → [cross-encoder] rerank to top-10 → [
 
 `data.py` loads BEIR (corpus, queries, **qrels** — the ground-truth labels).
 `retrieve.py` embeds and ranks. `cache.py` persists the result.
-`evaluate.py` and `oracle.py` are the entrypoints; `observability.py` shims
-Weave's `@op` so every phase runs with weave absent or uninitialized.
+`evaluate.py`, `oracle.py` and `rerank.py` are the entrypoints;
+`observability.py` shims Weave's `@op` so every phase runs with weave absent or
+uninitialized.
+
+**`rerank.py --breakdown` is where Phase 1's analysis lives**, not in a notebook
+— every per-bucket figure quoted in `README.md` is printed by that flag, so the
+claims stay reproducible. Its statistics (`spearman_permutation`, `_partial`,
+`n_relevant_in_top_k`) are pinned by `tests/test_rerank.py` for the same reason
+the retrieval code is: a correlation that silently depends on input order is the
+same class of well-formed-but-wrong output as a leaked `corpus_id`.
 
 **`cache.py` is load-bearing beyond speed.** Every later phase re-scores the
 *same* first-stage candidates — Phase 1 reranks them, `oracle.py` bounds what
