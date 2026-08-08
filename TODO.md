@@ -9,8 +9,9 @@ build Phase 1**: the oracle rerank puts the ceiling at **NDCG@10 0.6263** vs a
 0.3159 baseline, so +0.3104 of headroom is genuinely available to a
 cross-encoder. Retrieval is now cached (`cache/`), the repo was restructured
 into an installable `src/retrieval_lab` package with `pytest` suites, and
-`CLAUDE.md` was initialized. Six commits sit unpushed on a still-private repo.
-Detail in [SESSIONS.md](SESSIONS.md).
+`CLAUDE.md` was initialized. All work is pushed (`main` == `origin/main` at
+`7416124`); the repo is still **private** — see D4. Detail in
+[SESSIONS.md](SESSIONS.md).
 
 Run commands changed this session:
 
@@ -50,9 +51,6 @@ python -m retrieval_lab.oracle   --dataset nfcorpus
 
 ## Needs attention
 
-- ⚠️ **Six commits unpushed** (`5af1e0d` … this handoff) on a **private** repo.
-  Push is manual. Use `GH_HOST=github.com` for any `gh` op here — two hosts are
-  active on this machine (see SESSIONS.md 2026-07-15).
 - ⚠️ **`data/` and `cache/` resolve against the current working directory**, not
   the package root. Entrypoints must be run from the repo root or BEIR
   re-downloads elsewhere. Deliberate (anchoring to a computed repo root gets
