@@ -62,10 +62,22 @@ python -m retrieval_lab.oracle   --dataset nfcorpus
 
 ## Pick up here
 
-1. **Phase 1** — `rerank.py`: cross-encoder `cross-encoder/ms-marco-MiniLM-L-6-v2`
-   over the cached top-100 → top-10, re-measure, fill the ablation row. Read the
-   result against the 0.6263 ceiling, not against 1.0. Take `results` as an
-   argument (as `oracle_rerank` does) so it provably reranks the same candidates.
-2. **Add a fixture suite for the reranker** before trusting its number — same
-   discipline as `tests/test_retrieve.py` and `tests/test_oracle.py`.
-3. **Push, and settle D4** (public or wait for the Phase 1 row).
+1. **Implement `rerank()`** in `src/retrieval_lab/rerank.py` — scaffolded with a
+   `TODO(human)` docstring (four steps) and a `raise NotImplementedError` to
+   delete. Betty is writing this one herself. `tests/test_rerank.py` is already
+   written and currently red (10 errors, all `NotImplementedError`); it goes
+   green when the function is correct. Then:
+
+   ```bash
+   pytest tests/test_rerank.py                          # fixture first, always
+   python -m retrieval_lab.rerank --dataset nfcorpus --limit 20   # smoke test
+   python -m retrieval_lab.rerank --dataset nfcorpus     # the real number
+   ```
+
+   The two traps the tests exist to catch: build pairs as `(query, doc)` not
+   `(doc, query)`, and **return all ~100 candidates reordered — never truncate
+   to 10** (that collapses Recall@100 and breaks comparability with Phase 0).
+2. **Fill the Phase 1 ablation row** in `README.md`, and read the result against
+   the **0.6263 oracle ceiling, not 1.0**. `rerank.py`'s output prints the
+   "% of available headroom captured" for exactly this reason.
+3. **Settle D4** — flip the repo public once that row lands.
