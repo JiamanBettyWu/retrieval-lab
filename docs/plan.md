@@ -112,22 +112,32 @@ like `BGE-small-en` also works — just less headroom.)
   **LLM-as-judge** (cross-model to dodge self-bias), calibrated against a small
   hand-labeled set (report agreement). In `weave.Evaluation`.
 
-## Repo layout (actual — flat, small-lab)
+## Repo layout (actual — installable `src/` package)
 
 ```
 retrieval-lab/
-├── README.md          # pitch + the ablation table (the money shot)
-├── LEARNINGS.md       # devlog (harvested into the wiki project page later)
-├── requirements.txt
-├── docs/
-│   └── plan.md        # this file
-├── data/              # BEIR downloads (git-ignored)
-├── observability.py   # weave init + @op shim (from the mise pattern)
-├── data.py            # BEIR load (ships the qrels labels)
-├── retrieve.py        # Phase 0 · bi-encoder embed + top-k
-├── evaluate.py        # Phase 0 · main: load → retrieve → BEIR metrics → headroom check
-└── reports/           # dated ablation tables
+├── README.md              # pitch + the ablation table (the money shot)
+├── LEARNINGS.md           # devlog (harvested into the wiki project page later)
+├── pyproject.toml         # deps + editable install (`uv pip install -e '.[dev]'`)
+├── docs/plan.md           # this file
+├── src/retrieval_lab/
+│   ├── observability.py   # weave init + @op shim (from the mise pattern)
+│   ├── data.py            # BEIR load (ships the qrels labels)
+│   ├── retrieve.py        # Phase 0 · bi-encoder embed + top-k
+│   ├── cache.py           # on-disk retrieval cache (pins candidates across phases)
+│   ├── evaluate.py        # Phase 0 · entrypoint: load → retrieve → metrics → headroom
+│   └── oracle.py          # Phase 1 · entrypoint: the perfect-rerank ceiling
+├── tests/                 # fixture suites (pytest, no download)
+├── data/                  # BEIR downloads (git-ignored)
+├── cache/                 # cached retrieval runs (git-ignored)
+└── reports/               # dated ablation tables
 ```
+
+**Amends the original flat-layout decision** (see SESSIONS.md 2026-07-15, which
+chose root-level files to dodge package-import traps). Reversed 2026-08-07 once
+the module count reached seven: `pyproject.toml` + an editable install makes
+imports unambiguous rather than fragile, which was the actual concern. Cost is
+one setup step and `python -m retrieval_lab.<entrypoint>` invocations.
 
 Planned additions as phases land: `rerank.py` (Phase 1), `finetune.py` (Phase 2),
 `app/` (Phase 3).

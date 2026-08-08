@@ -20,18 +20,22 @@ An off-the-shelf **bi-encoder** (`all-MiniLM-L6-v2`) over a small BEIR set
 ### Setup
 
 ```bash
-uv venv && uv pip install -r requirements.txt   # or: pip install -r requirements.txt
-# optional, for Weave tracing:
-export WANDB_API_KEY=...
+uv venv && uv pip install -e '.[dev]'    # add ,tracing for Weave: -e '.[dev,tracing]'
+export WANDB_API_KEY=...                 # optional — tracing is inert without it
 ```
+
+An editable install, so `retrieval_lab` is importable from anywhere while the
+source stays live under `src/`.
 
 ### Run
 
+Run from the repo root — `data/` and `cache/` resolve against the working
+directory.
+
 ```bash
-python test_retrieve.py                 # ~5s, no download — verifies retrieve()
-python test_oracle.py                   # instant — verifies oracle_rerank()
-python evaluate.py --dataset nfcorpus   # the baseline
-python oracle.py   --dataset nfcorpus   # the ceiling a reranker could reach
+pytest                                            # both fixture suites, ~6s, no download
+python -m retrieval_lab.evaluate --dataset nfcorpus   # the baseline
+python -m retrieval_lab.oracle   --dataset nfcorpus   # the ceiling a reranker could reach
 ```
 
 Retrieval results are cached to `cache/` per (dataset, model, top_k), so only
@@ -39,13 +43,14 @@ the first run pays the ~1 min encode — and every later stage provably reranks
 the *same* candidate set rather than a re-encoded one. The cache key does not
 cover `retrieve.py`'s contents: pass `--refresh` after editing it.
 
-`test_retrieve.py` is a five-document fixture with a known-correct answer. It
-checks the shape of `retrieve()`'s output *and* runs BEIR's own evaluator over
-it, which must score exactly `NDCG@10 = 1.0`. That last check is the one that
-catches the failure mode the full run can't diagnose: if `corpus_id` row indices
-leak through unmapped, `pytrec_eval` finds no overlap with the qrels and reports
-`NDCG@10 = 0.0` — which reads as "weak model," not "wrong ids." Run the fixture
-before trusting any number from `evaluate.py`.
+**Run `pytest` before trusting any number from `evaluate.py`.** The suites are
+five-document fixtures with known-correct answers, and each test targets one
+failure mode — so a red run names its own cause, where the full BEIR run
+collapses every bug into a single low NDCG. The load-bearing test feeds the
+fixture through BEIR's own evaluator, which must score exactly `NDCG@10 = 1.0`:
+if `corpus_id` row indices ever leak through unmapped, `pytrec_eval` finds no
+overlap with the qrels and reports `0.0` — which reads as "weak model," not
+"wrong ids."
 
 ## Ablation (fills in as phases land)
 
@@ -95,10 +100,19 @@ Two reading notes so these aren't mistaken for bugs: `NDCG@100` (0.295) sits
 faster than retrieved gain; and **Recall@10 caps at 0.615**, not 1.0, since the
 median query has 16 relevant docs and only 10 slots.
 
-## Files
+## Layout
 
-- `data.py` — BEIR download + load (ships the `qrels` labels).
-- `retrieve.py` — the bi-encoder retrieval (Phase 0 core).
-- `test_retrieve.py` — fixture test for `retrieve()` (fast, no download).
-- `evaluate.py` — main: load → retrieve → BEIR metrics → headroom check.
-- `observability.py` — Weave init + `@op` shim (works with or without weave).
+```
+src/retrieval_lab/
+├── data.py           # BEIR download + load (ships the qrels labels)
+├── retrieve.py       # the bi-encoder retrieval (Phase 0 core)
+├── cache.py          # on-disk retrieval cache — pins the candidate set across phases
+├── evaluate.py       # entrypoint: load → retrieve → BEIR metrics → headroom check
+├── oracle.py         # entrypoint: the perfect-rerank ceiling (Phase 1's upper bound)
+└── observability.py  # Weave init + @op shim (works with or without weave)
+tests/                # fixture suites, no download required
+docs/plan.md          # the full multi-phase design doc
+```
+
+Gitignored and rebuildable: `data/` (BEIR downloads) and `cache/` (retrieval
+runs — delete to force a recompute, or pass `--refresh`).

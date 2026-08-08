@@ -10,10 +10,10 @@ import logging
 
 from beir.retrieval.evaluation import EvaluateRetrieval
 
-from cache import cached_retrieval
-from data import load_beir
-from observability import init_weave
-from retrieve import BI_ENCODER, load_encoder, retrieve
+from .cache import cached_retrieval
+from .data import load_beir
+from .observability import init_weave
+from .retrieve import BI_ENCODER, load_encoder, retrieve
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("retrieval_lab")

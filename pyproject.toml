@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "retrieval-lab"
+version = "0.1.0"
+description = "A two-stage RAG retriever, LoRA-fine-tuned, measured on BEIR at every step"
+requires-python = ">=3.10"
+dependencies = [
+    "sentence-transformers>=3.0",
+    "beir>=2.0",
+]
+
+[project.optional-dependencies]
+# Weave is optional by design — observability.py shims `@op` so every phase
+# runs with no weave and no WANDB_API_KEY.
+tracing = ["weave>=0.51"]
+dev = ["pytest>=8.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/retrieval_lab"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,3 +1,0 @@
-sentence-transformers>=3.0
-beir>=2.0
-weave>=0.51        # optional — Phase 0 runs without it (see observability.py shim)

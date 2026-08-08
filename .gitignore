@@ -7,3 +7,9 @@ reports/*.json
 .env
 .weave/
 wandb/
+scratch.ipynb
+# build artifacts (a plain `pip install -e .` leaves these; uv does not)
+build/
+dist/
+*.egg-info/
+.pytest_cache/

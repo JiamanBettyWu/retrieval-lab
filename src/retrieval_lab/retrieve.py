@@ -7,7 +7,7 @@ can't scale to a full corpus.)
 """
 from sentence_transformers import SentenceTransformer, util as st_util
 
-from observability import op
+from .observability import op
 
 BI_ENCODER = "sentence-transformers/all-MiniLM-L6-v2"
 
