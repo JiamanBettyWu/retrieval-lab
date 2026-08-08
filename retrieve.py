@@ -27,26 +27,27 @@ def retrieve(model: SentenceTransformer, corpus: dict, queries: dict, top_k: int
 
     Return BEIR's expected shape:  {query_id: {doc_id: score}}  (top_k docs/query).
 
-    TODO(human): implement the bi-encoder retrieval. Four steps:
-      1. Build parallel id/text lists:
-           doc_ids   = list(corpus);   doc_texts   = [doc_text(corpus[d]) for d in doc_ids]
-           query_ids = list(queries);  query_texts = [queries[q] for q in query_ids]
-      2. Embed both with model.encode(...). Useful kwargs:
-           normalize_embeddings=True   (so cosine == dot product)
-           convert_to_tensor=True
-           show_progress_bar=True      (nice for the ~3.6k-doc corpus)
-      3. Get top_k per query:
-           hits = st_util.semantic_search(query_emb, doc_emb, top_k=top_k)
-         -> hits[i] is a list of {"corpus_id": int, "score": float} for query i.
-      4. Map row indices back to real ids and build the nested dict:
-           results[query_ids[i]][doc_ids[hit["corpus_id"]]] = float(hit["score"])
-      Return `results`.
+    Embeddings are L2-normalized so cosine similarity == dot product, which is
+    what semantic_search ranks by. It returns row indices (`corpus_id`) into the
+    order docs were encoded in, so the last step maps those back to real doc_ids.
+
+    Covered by test_retrieve.py.
     """
     doc_ids = list(corpus)
     doc_texts = [doc_text(corpus[d]) for d in doc_ids]
     query_ids = list(queries)
     query_texts = [queries[q] for q in query_ids]
 
-    model.encode()
+    doc_emb = model.encode(doc_texts, normalize_embeddings=True, convert_to_tensor=True, show_progress_bar=True)
+    query_emb = model.encode(query_texts, normalize_embeddings=True, convert_to_tensor=True, show_progress_bar=True)
 
-    raise NotImplementedError("retrieve() — your turn (steps are in the docstring above)")
+    hits = st_util.semantic_search(query_emb, doc_emb, top_k=top_k)
+
+    results: dict[str, dict[str, float]] = {}
+
+    for i, q in enumerate(query_ids):
+        # corpus_id is a ROW INDEX into doc_texts — map it back to the real
+        # BEIR doc_id, or pytrec_eval finds no overlap with qrels and scores 0.
+        results[q] = {doc_ids[hit["corpus_id"]]: float(hit["score"]) for hit in hits[i]}
+
+    return results
