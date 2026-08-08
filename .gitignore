@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 data/
+cache/
 reports/*.json
 .env
 .weave/

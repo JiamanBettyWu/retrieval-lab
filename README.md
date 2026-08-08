@@ -29,8 +29,15 @@ export WANDB_API_KEY=...
 
 ```bash
 python test_retrieve.py                 # ~5s, no download — verifies retrieve()
-python evaluate.py --dataset nfcorpus   # the real baseline
+python test_oracle.py                   # instant — verifies oracle_rerank()
+python evaluate.py --dataset nfcorpus   # the baseline
+python oracle.py   --dataset nfcorpus   # the ceiling a reranker could reach
 ```
+
+Retrieval results are cached to `cache/` per (dataset, model, top_k), so only
+the first run pays the ~1 min encode — and every later stage provably reranks
+the *same* candidate set rather than a re-encoded one. The cache key does not
+cover `retrieve.py`'s contents: pass `--refresh` after editing it.
 
 `test_retrieve.py` is a five-document fixture with a known-correct answer. It
 checks the shape of `retrieve()`'s output *and* runs BEIR's own evaluator over
@@ -47,6 +54,19 @@ before trusting any number from `evaluate.py`.
 | Phase 0 · bi-encoder | `all-MiniLM-L6-v2` | **0.3159** | **0.5046** | **0.3115** |
 | Phase 1 · + rerank | `+ cross-encoder/ms-marco-MiniLM-L-6-v2` | | | |
 | Phase 2 · LoRA encoder | fine-tuned on MS MARCO | | | |
+| _ceiling_ · **oracle rerank** | _perfect reorder of the same top-100_ | _0.6263_ | — | _0.3115_ |
+
+The last row is not a system — it's the **measuring stick**. `oracle.py` reads
+the qrels and orders each query's retrieved candidates perfectly, but may only
+*reorder* what retrieval found, never add to it. So `0.6263` is the hard upper
+bound on anything a real cross-encoder can reach over these candidates, and the
+Phase 1 row should be read against it rather than against 1.0.
+
+**Phase 1 is worth building (D3 resolved).** Available headroom is **+0.3104 —
+a 98% relative gain over baseline** — meaning the bi-encoder's top-100 already
+*contains* roughly the right documents and is simply ordering them badly. That
+is precisely the failure a cross-encoder repairs. The remaining `1 − 0.6263 =
+0.3737` is unreachable by any reranker; it's recall, and it belongs to Phase 2.
 
 ### Phase 0 headroom verdict — proceed
 

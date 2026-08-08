@@ -10,24 +10,29 @@ import logging
 
 from beir.retrieval.evaluation import EvaluateRetrieval
 
+from cache import cached_retrieval
 from data import load_beir
 from observability import init_weave
-from retrieve import load_encoder, retrieve
+from retrieve import BI_ENCODER, load_encoder, retrieve
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("retrieval_lab")
 
 
-def main(dataset: str, top_k: int) -> None:
+def main(dataset: str, top_k: int, refresh: bool = False) -> None:
     init_weave()  # tracing on if weave + WANDB_API_KEY present; inert otherwise
 
     log.info("Loading BEIR/%s ...", dataset)
     corpus, queries, qrels = load_beir(dataset)
     log.info("corpus=%d docs | queries=%d | qrels=%d", len(corpus), len(queries), len(qrels))
 
-    model = load_encoder()
     log.info("Retrieving top-%d with the bi-encoder ...", top_k)
-    results = retrieve(model, corpus, queries, top_k=top_k)
+    results = cached_retrieval(
+        dataset, BI_ENCODER, top_k,
+        # a thunk, so a cache hit never loads the encoder at all
+        compute=lambda: retrieve(load_encoder(BI_ENCODER), corpus, queries, top_k=top_k),
+        refresh=refresh,
+    )
 
     ndcg, _map, recall, _precision = EvaluateRetrieval.evaluate(qrels, results, [10, top_k])
     mrr = EvaluateRetrieval.evaluate_custom(qrels, results, [10], metric="mrr")
@@ -59,5 +64,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", default="nfcorpus")
     p.add_argument("--top-k", type=int, default=100)
+    p.add_argument("--refresh", action="store_true",
+                   help="recompute retrieval, ignoring the cache (use after editing retrieve.py)")
     args = p.parse_args()
-    main(args.dataset, args.top_k)
+    main(args.dataset, args.top_k, args.refresh)
