@@ -27,6 +27,25 @@ export WANDB_API_KEY=...                 # optional — tracing is inert without
 An editable install, so `retrieval_lab` is importable from anywhere while the
 source stays live under `src/`.
 
+**To reproduce the numbers in the ablation table, use the lockfile instead:**
+
+```bash
+uv sync --locked --all-extras            # exact versions from uv.lock
+```
+
+`pyproject.toml` gives ranges (`sentence-transformers>=3.0`); `uv.lock` pins the
+resolved version of every dependency and all ~180 transitive ones. Metrics move
+with model and tokenizer versions, so a fresh resolve can produce a different
+NDCG@10 and leave you unable to tell a real regression from a newer `torch`.
+The command above is what makes "run this and you get 0.3412" checkable rather
+than asserted — `uv pip install` ignores the lock and resolves fresh.
+
+Two things to know before running it. **`uv sync` prunes**: it makes the venv
+*exactly* match the lock, uninstalling anything else, where `uv pip install` only
+ever adds. And it treats extras as exact too — `--extra dev` alone would remove
+Weave, hence `--all-extras`. `--locked` fails rather than silently re-resolving
+if `uv.lock` has drifted from `pyproject.toml`.
+
 ### Run
 
 Run from the repo root — `data/` and `cache/` resolve against the working

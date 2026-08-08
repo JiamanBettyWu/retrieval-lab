@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 uv venv && uv pip install -e '.[dev]'      # add ,tracing for Weave: -e '.[dev,tracing]'
 export WANDB_API_KEY=...                   # optional — tracing is inert without it
 
+uv sync --locked --all-extras              # reproduce the ablation table's exact versions
+
 pytest                                     # both fixture suites, ~6s, no download
 pytest tests/test_oracle.py -q             # one file
 pytest -k "keys_are_real" -q               # one test
@@ -21,6 +23,16 @@ python -m retrieval_lab.rerank   --dataset nfcorpus --breakdown   # + the per-bu
 **Always run from the repo root.** `data/` (BEIR downloads) and `cache/`
 (retrieval runs) resolve against the current working directory, not the package
 root. Both are gitignored and rebuildable.
+
+**`uv pip install` and `uv sync` are not interchangeable here.** `uv pip install`
+resolves fresh and only ever adds; it ignores `uv.lock` entirely. `uv sync` reads
+the lock and makes the venv *exactly* match it, uninstalling everything else —
+`--extra dev` on its own removes Weave, so pass `--all-extras`. Use `uv sync
+--locked --all-extras` when a number in the ablation table needs reproducing,
+`uv pip install` for everyday work. The lockfile is committed because the repo's
+claims are version-dependent: metrics shift with model and tokenizer releases,
+and an unpinned environment makes "a real regression" and "a newer torch"
+indistinguishable.
 
 `--refresh` on either entrypoint recomputes retrieval instead of reading the
 cache. **The cache key covers dataset + model + top_k but NOT the contents of
