@@ -108,8 +108,8 @@ an already-specialized model would flatten the ablation.
   D1…, next actions), overwritten each session. **`SESSIONS.md`** = append-only
   dated journal; never edit past entries. Both are refreshed via
   `/baton:handoff`, which is user-invocable only — ask the user to run it.
-- **`LEARNINGS.md`** = the owner's personal devlog. Append findings while fresh,
-  but flag entries written by Claude so they can be rewritten or cut.
+- **`LEARNINGS.md`** = the project devlog. Append findings while they're fresh,
+  in the file's existing voice; no need to mark which entries Claude wrote.
 - **`README.md` carries the ablation table** — it's the portfolio front door.
   Update it when a phase lands a number.
 - Decisions that reverse an earlier recorded one should say so explicitly (see

@@ -6,6 +6,107 @@ done, what was decided and why. History only; for what to do next see
 
 ---
 
+## 2026-08-07, later (Phase 1 ceiling measured, D3 resolved, src/ restructure)
+
+Same working day as the entry below, which closed out Phase 0. This half
+answered "is Phase 1 worth building?" *before* building it, then reorganized the
+repo. Commits `31349fc`, `343d7d1`, `d8a9783`, `1cbab34`.
+
+**Caching came first, and not for speed** (`src/retrieval_lab/cache.py`,
+`31349fc`). Every later phase re-scores the *same* first-stage candidates — the
+Phase 1 cross-encoder reranks them, the oracle bounds what that reranking could
+achieve. Recomputing embeddings per run left "did both stages see identical
+candidates?" resting on determinism instead of evidence; a JSON cache keyed on
+(dataset, model, top_k) makes it a fact. Confirmed lossless — the cache-hit run
+reproduced 0.3159 / 0.5046 / 0.3115 exactly. The `compute` argument is a thunk
+so a cache hit skips loading the encoder entirely, not just the encoding. **The
+key does not cover `retrieve.py`'s contents** — edit that file and the cache
+goes stale silently, hence `--refresh`.
+
+**The oracle rerank** (`src/retrieval_lab/oracle.py`). A cheating reranker: it
+reads the qrels and orders each query's retrieved candidates perfectly, but may
+only *reorder* what retrieval found, never add to it. Result on NFCorpus
+top-100: **baseline 0.3159 → oracle 0.6263, headroom +0.3104 (98% relative)**.
+Recall@10 tells the same story more plainly — reordering alone lifts it
+0.155 → 0.276 against a Recall@100 of 0.3115, meaning nearly every relevant doc
+the retriever found is already in the top-100 but buried below rank 10. The
+residual `1 − 0.6263 = 0.3737` is unreachable by any reranker; that is recall,
+and it belongs to Phase 2.
+
+**D3 resolved: build Phase 1.** The top-100 contains roughly the right documents
+and merely orders them badly, which is precisely what a cross-encoder repairs.
+The oracle row is now a permanent third column in the README ablation table — a
+ceiling to read Phase 1's result against rather than the meaningless 1.0. That
+framing is itself the portfolio point: most RAG projects report the lift and
+never the ceiling.
+
+**A verification mistake worth remembering, because it was caught rather than
+avoided.** The first version (`31349fc`) asserted only a per-query invariant:
+oracle ≥ baseline on every query. That felt rigorous and isn't — it passes for
+*any* improvement, including one leaving gain on the table, so it establishes
+"better," not "best." For a number the README publishes as a hard upper bound,
+best is the claim. `343d7d1` adds `arithmetic_ceiling()`, which derives the mean
+NDCG@10 from first principles independently of the sort under test (place the
+best k retrieved-relevant grades at ranks 1..k over IDCG@10 from full qrels).
+It agrees to floating point: **0.626292 vs 0.626300**. Both invariants now
+assert on every run. The general lesson: a monotonicity check and an optimality
+check are different claims, and it is easy to ship the first while believing
+you shipped the second.
+
+**Metric facts pinned down along the way**, now recorded in `CLAUDE.md` so they
+don't get re-derived: qrels values are relevance *grades* (NFCorpus uses 1 and
+2, higher = better), not rank positions — six docs can share grade 2, which is
+what proves it. `pytrec_eval` computes NDCG with **linear gain** (`gain = grade`),
+not the exponential `2^grade − 1` common in papers; verified empirically rather
+than assumed, with a case that discriminates the two (0.859719 linear vs
+0.796708 exponential — pytrec_eval returned the former). And the ideal ranking
+is *constructed* by sorting the graded docs, which is why IDCG counts relevant
+docs retrieval never returned and why the oracle cannot reach 1.0.
+
+**The restructure (the real decision this half).** Betty asked to move the code
+into `src/`. That **reverses the flat-layout decision recorded in the entry
+below** ("small lab; also sidesteps the package-import traps mise hit"), so it
+was surfaced explicitly rather than quietly applied — she overruled it
+deliberately after seeing the trade-off. At seven modules, with `rerank.py` and
+`finetune.py` still to come, `pyproject.toml` plus an editable install makes
+imports unambiguous rather than fragile, which was the actual concern behind the
+original call. Two lighter options were offered and declined: `tests/` only
+(zero import changes), and a `src/` directory with a `PYTHONPATH` shim — the
+latter rejected in the framing because a path shim *is* the fragility the
+original note warned about. Amendment recorded in `docs/plan.md` rather than
+overwriting the old layout section. `d8a9783`.
+
+Two things the move forced. The test files were `main()`-driven scripts with
+bare asserts; under `pytest tests/` they would have collected **zero tests and
+exited green** — worse than having no suite. Converted to real parametrized
+`test_*` functions (22 tests, ~6s). And `requirements.txt` was deleted rather
+than kept alongside `pyproject.toml`, since two dependency lists drift. Weave
+moved to a `[tracing]` extra, matching its already-optional design. Verified
+mechanical: both entrypoints reproduce their numbers exactly post-move, and
+`git mv` throughout so `git log --follow` still reaches the original commits.
+
+**`CLAUDE.md` initialized** (`1cbab34`) — setup/run commands for the new layout,
+the pipeline architecture, the measurement discipline as the repo's actual
+thesis, and the failure modes that cost time to rediscover (NDCG 0.0 = wrong
+ids; cwd-relative `data/`/`cache/`; the cache key not covering `retrieve.py`;
+NFCorpus's Recall@10 cap of 0.615 and the expected `NDCG@100 < NDCG@10`
+inversion). Every command in it was run before committing.
+
+**Non-obvious / quirks:**
+- `data/` and `cache/` resolve against the **current working directory**, not
+  the package root — entrypoints must be run from the repo root. Chosen over
+  anchoring to a computed repo root, which gets fragile once a package is
+  installed. Documented in the package docstring and README.
+- A **Codex config exists at `~/.codex/config.toml`** (user-level, untouched and
+  unread). `/import` would list what's portable into Claude Code.
+- Betty added `scratch.ipynb` for experiments; gitignored at her request, along
+  with `build/`, `dist/`, `*.egg-info/`, `.pytest_cache/` — `uv` doesn't create
+  those but a plain `pip install -e .` would.
+- Convention set this session: **no need to mark which `LEARNINGS.md` entries
+  Claude wrote.** `CLAUDE.md` updated accordingly.
+
+---
+
 ## 2026-08-07 (Phase 0 green — retrieve() fixed, baseline measured, D1 resolved)
 
 Picked up the `retrieve()` WIP handed over on 2026-07-15 and closed out Phase 0.

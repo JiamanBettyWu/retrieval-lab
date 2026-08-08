@@ -4,13 +4,22 @@ Forward-looking state. Session history lives in [SESSIONS.md](SESSIONS.md).
 
 ## Current state
 
-**As of 2026-08-07 (latest session):** **Phase 0 is green and complete** —
-`retrieve()`'s id-mapping bug fixed, a fast fixture test added
-(`test_retrieve.py`), and the baseline measured on BEIR/NFCorpus: **NDCG@10
-0.3159 · MRR@10 0.5046 · Recall@100 0.3115** (commit `5af1e0d`). The headroom
-check passes and **D1 is resolved in favor of NFCorpus** on empirical grounds.
-Next up is Phase 1's reranker, but measure its ceiling first (D3). Detail in
-[SESSIONS.md](SESSIONS.md).
+**As of 2026-08-07 (latest session):** Phase 0 is green and **D3 is resolved —
+build Phase 1**: the oracle rerank puts the ceiling at **NDCG@10 0.6263** vs a
+0.3159 baseline, so +0.3104 of headroom is genuinely available to a
+cross-encoder. Retrieval is now cached (`cache/`), the repo was restructured
+into an installable `src/retrieval_lab` package with `pytest` suites, and
+`CLAUDE.md` was initialized. Six commits sit unpushed on a still-private repo.
+Detail in [SESSIONS.md](SESSIONS.md).
+
+Run commands changed this session:
+
+```bash
+uv pip install -e '.[dev]'                            # from the repo root
+pytest
+python -m retrieval_lab.evaluate --dataset nfcorpus
+python -m retrieval_lab.oracle   --dataset nfcorpus
+```
 
 ## Open decisions
 
@@ -23,43 +32,42 @@ Next up is Phase 1's reranker, but measure its ceiling first (D3). Detail in
 - **If A:** thin `app/` with Gradio. **If B:** reuse the mise FastAPI+React
   pattern.
 
-### D3: Does Phase 1 (cross-encoder rerank) clear its own headroom bar?
-- **The question:** the reranker can only reorder what retrieval already found,
-  and Recall@100 is 0.311. An **oracle rerank** (sort the existing top-100 by
-  qrels, compute NDCG@10) is a pure sort with no model inference and gives the
-  hard upper bound on everything Phase 1 can deliver.
-- **Options:** A) **Oracle first, then build** — one cheap check, and it earns a
-  third ablation column (off-the-shelf / +rerank / oracle) B) **Build the
-  cross-encoder directly** — skips a step, but the resulting lift has no ceiling
-  to interpret it against.
-- **Recommendation:** A. It mirrors the Phase 0 discipline already recorded in
-  `LEARNINGS.md` ("the cheap experiment that could kill the plan runs first"),
-  and reporting the ceiling alongside the lift is the stronger portfolio artifact.
-- **Blocked on:** nothing — resolvable empirically in one short run.
-- **If oracle NDCG@10 is high (~0.7+):** relevant docs are in the top-100, just
-  badly ordered → build Phase 1's cross-encoder as planned.
-- **If oracle NDCG@10 is low (~0.4):** reordering can't save it; recall is the
-  binding constraint → deprioritize Phase 1, jump to Phase 2's LoRA fine-tune
-  (which improves retrieval itself), and note the reranker's cap in the README.
+### D4: Flip the repo public now that Phase 0 is presentable?
+- **Context:** the 2026-07-15 entry set "private for now, public once Phase 0 is
+  presentable" as the plan. Phase 0 now has a baseline, a measured ceiling, a
+  test suite, and a README that leads with the ablation table.
+- **Options:** A) **Flip now** — the headroom story (measuring the ceiling
+  before building) already stands on its own as the portfolio point B) **Wait
+  for Phase 1** — a before/after row makes the table show *movement*, which was
+  the stated deliverable
+- **Recommendation:** B, narrowly. The current table has one real row plus a
+  ceiling; one more row turns it from a baseline into an ablation. Phase 1 is
+  the next task anyway, so the wait is short.
+- **Blocked on:** Betty's call — also worth a skim of `LEARNINGS.md` and
+  `SESSIONS.md` for anything not meant to be public.
+- **If A:** `GH_HOST=github.com gh repo edit --visibility public`, push first.
+- **If B:** revisit once the Phase 1 row lands; nothing to revert.
 
 ## Needs attention
 
-- ⚠️ **`LEARNINGS.md`'s two new entries were written by Claude**, in the file's
-  existing voice. It's a personal devlog — worth a read-through and a rewrite in
-  Betty's own words, or a cut, before this repo goes public.
-- ⚠️ **Two commits are unpushed** (`5af1e0d` + this handoff). Repo is still
-  **private**; per the 2026-07-15 entry the plan is to flip it public once
-  Phase 0 is presentable — which it now is. Push is a manual step. Remember
-  `GH_HOST=github.com` for any `gh` operation (see SESSIONS.md 2026-07-15).
+- ⚠️ **Six commits unpushed** (`5af1e0d` … this handoff) on a **private** repo.
+  Push is manual. Use `GH_HOST=github.com` for any `gh` op here — two hosts are
+  active on this machine (see SESSIONS.md 2026-07-15).
+- ⚠️ **`data/` and `cache/` resolve against the current working directory**, not
+  the package root. Entrypoints must be run from the repo root or BEIR
+  re-downloads elsewhere. Deliberate (anchoring to a computed repo root gets
+  fragile once installed) but it is an assumption baked into `data.py` and
+  `cache.py`.
+- ⚠️ **The retrieval cache key does not cover `retrieve.py`'s contents.** Edit
+  that file without `--refresh` and stale results are served silently — the
+  exact class of failure Phase 0 already lost time to.
 
 ## Pick up here
 
-1. **Oracle-rerank ceiling** (D3) — reorder the existing top-100 by qrels,
-   compute NDCG@10, add it to the README ablation table as a third row.
-2. **Cache retrieval results to disk** — `evaluate.py` re-encodes the corpus
-   every run (~1 min). Phase 1 must rerank the *same* top-100 Phase 0 produced,
-   so this is likely a prerequisite, not just a speedup.
-3. **Phase 1 proper** — rerank top-100 with
-   `cross-encoder/ms-marco-MiniLM-L-6-v2` → top-10, re-measure, fill the
-   before/after ablation row. Re-run `python test_retrieve.py` after any change
-   to `retrieve()`.
+1. **Phase 1** — `rerank.py`: cross-encoder `cross-encoder/ms-marco-MiniLM-L-6-v2`
+   over the cached top-100 → top-10, re-measure, fill the ablation row. Read the
+   result against the 0.6263 ceiling, not against 1.0. Take `results` as an
+   argument (as `oracle_rerank` does) so it provably reranks the same candidates.
+2. **Add a fixture suite for the reranker** before trusting its number — same
+   discipline as `tests/test_retrieve.py` and `tests/test_oracle.py`.
+3. **Push, and settle D4** (public or wait for the Phase 1 row).
