@@ -5,7 +5,8 @@ encoder, and **prove** each improvement on a labeled benchmark (BEIR) with
 metrics traced in Weave. Then demo the validated pipeline as an "ask my second
 brain" front door over a personal wiki.
 
-> Full plan lives in the `llm-wiki` vault: `notes/retrieval-lab`.
+> Full plan: [`docs/plan.md`](docs/plan.md). Current state and open decisions:
+> [`TODO.md`](TODO.md).
 
 ## Phase 0 — baseline retriever + eval harness
 

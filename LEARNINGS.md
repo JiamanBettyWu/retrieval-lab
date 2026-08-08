@@ -1,7 +1,7 @@
 # LEARNINGS — retrieval-lab
 
-Append-only devlog, written while it's fresh. Harvested into the `llm-wiki`
-project page once this graduates from plan to built.
+Append-only devlog, written while it's fresh — findings and the reasoning
+behind them, recorded before they turn into hindsight.
 
 ## 2026-07 — Phase 0: the headroom check comes before any reranker
 Phase 0's real job isn't "build a retriever" — it's to confirm the dataset can

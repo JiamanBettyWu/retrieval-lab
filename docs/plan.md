@@ -1,8 +1,7 @@
 # Retrieval Lab — plan
 
-> Canonical mirror: the `llm-wiki` vault note `notes/retrieval-lab` (where the
-> `[[concept]]` names below link to real concept pages). This copy lives with
-> the code and is the working design doc for the repo.
+> The working design doc for the repo. Read this before proposing
+> architectural changes; `TODO.md` carries current state and open decisions.
 
 A **retrieval-quality lab**: build a two-stage RAG retriever, LoRA-fine-tune its
 encoder, and **prove** each improvement on a labeled benchmark (BEIR) with
@@ -117,7 +116,7 @@ like `BGE-small-en` also works — just less headroom.)
 ```
 retrieval-lab/
 ├── README.md              # pitch + the ablation table (the money shot)
-├── LEARNINGS.md           # devlog (harvested into the wiki project page later)
+├── LEARNINGS.md           # devlog — findings recorded while they're fresh
 ├── pyproject.toml         # deps + editable install (`uv pip install -e '.[dev]'`)
 ├── docs/plan.md           # this file
 ├── src/retrieval_lab/
