@@ -141,6 +141,41 @@ mutating the venv: sync **prunes** to match the lock exactly (unlike additive
 `uv pip install`), and treats extras as exact too — `--extra dev` alone would
 have uninstalled Weave and 62 other packages.
 
+**MIT license added (`4b76eb4`).** Public without a LICENSE defaults to *all
+rights reserved* — readable but not legally reusable, an ambiguity with no
+upside. MIT over Apache 2.0 because the patent grant is irrelevant to a
+retrieval lab; no conflict with BEIR or sentence-transformers (both Apache 2.0),
+and NFCorpus is downloaded at runtime rather than committed, so there is no data
+question. Declared in `pyproject.toml` as well so package metadata and repo
+agree, and verified by building rather than assuming: `uv build` puts
+`License-Expression: MIT` in the wheel's METADATA and bundles the LICENSE file.
+Worth knowing that the bare-string `license = "MIT"` form is PEP 639 and older
+hatchling rejects it — this repo's is new enough.
+
+**Dropped the private-vault cross-references (`41f9eff`).** Four pointers aimed
+at an `llm-wiki` vault note were dead links for a public reader: `README.md:8`,
+`LEARNINGS.md:3`, `docs/plan.md:3` and `:120`. Replaced with in-repo pointers
+(`docs/plan.md`, `TODO.md`) rather than deleted, so navigation still works.
+Two deliberate non-changes. **Phase 3's design stays a wiki demo** — that is a
+product decision, not a dangling reference, and stripping it would leave the
+phase with no described corpus. **SESSIONS.md was left untouched** despite
+carrying eight wiki mentions, because the journal is append-only and those
+mentions hold the reasoning for evaluating on BEIR instead of the wiki (see the
+2026-07-15 entry). Also noted at the time: this does not scrub git history,
+which was already public by then — what was exposed is the *name* of a private
+project and a note path, nothing about its contents, so a history rewrite was
+judged not worth it.
+
+**New open decision D6**, surfaced while cleaning up the above and deliberately
+left unresolved: `docs/plan.md:19` claims Phase 3 is "shareable: public
+benchmark + public wiki", which sits oddly now that the wiki is private. The
+underlying question is whether the Phase 3 demo is hosted at all. The trap worth
+recording: a RAG demo is not a normal private-backend/public-frontend case,
+because its entire output is *passages quoted from the corpus* — anyone who can
+query it can extract the notes a chunk at a time. So "keep the data on the
+server" does not keep it private. Betty is thinking about it; `plan.md:19` is
+knowingly left asserting something undecided.
+
 ## 2026-08-08 (Phase 1 scaffolded; why reranking precedes the recall work)
 
 Continuation of the 2026-08-07 session below. No metrics moved; this was

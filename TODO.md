@@ -10,7 +10,9 @@ cross-encoder took NDCG@10 from 0.3159 to **0.3412** — `+0.0253`, or **8.1% of
 the 0.3104 headroom** the oracle measured. `pytest` is **fully green (40
 tests)**. Explaining the modest gain took four attempts and the honest answer is
 in the README; the actionable residue is that the reranker *loses* 1.06 NDCG
-points on dense queries, which is a free Phase 2 lever (D5). Detail in
+points on dense queries, which is a free Phase 2 lever (D5). Also shipped:
+**MIT license**, `uv sync` documented as the reproducible-install path, and the
+private-vault cross-references dropped now that the repo is public. Detail in
 [SESSIONS.md](SESSIONS.md).
 
 ```bash
@@ -54,6 +56,24 @@ python -m retrieval_lab.rerank   --dataset nfcorpus --breakdown   # the analysis
   "baseline was already good" rule select nearly the same queries (they
   correlate at 0.57), so it would work without confirming *why*.
   **If C:** record it as a known regression so Phase 2's numbers stay readable.
+
+### D6: Is the Phase 3 demo hosted, and over what corpus?
+- **Context:** `docs/plan.md:19` still claims "shareable: public benchmark +
+  public wiki", written before the wiki was settled as private. **The trap:** a
+  RAG demo's entire output is *passages quoted from the corpus*, so anyone who
+  can query it reads the notes a chunk at a time — keeping data server-side does
+  not keep it private. The question is who may read the wiki, not where it lives.
+- **Options:** A) **Local-only + a README screencast** — stays private, no live
+  link, ~zero work B) **Curated public subset** — a live link; curation is the
+  whole cost C) **A public corpus** (Wikipedia/arXiv) — reproducible by anyone,
+  fits the measurement thesis, drops the "second brain" framing D) **Auth** —
+  private, but demos to nobody
+- **Recommendation:** A. A 30-second screencast answering from real notes is
+  compelling and risks nothing. C if a live link matters more than the framing.
+- **Blocked on:** Betty — not urgent, Phase 3 is two phases out.
+- **If A:** leave Phase 3's framing as-is. **If B/C:** `docs/plan.md` Phase 3
+  needs rewriting and D2 interacts (hosting argues for Gradio on HF Spaces).
+  **Any outcome:** fix `plan.md:19`, which asserts an undecided thing.
 
 ## Needs attention
 
