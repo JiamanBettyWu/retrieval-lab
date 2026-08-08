@@ -6,6 +6,119 @@ done, what was decided and why. History only; for what to do next see
 
 ---
 
+## 2026-08-08 (Phase 1 lands at 0.3412; four wrong answers about why)
+
+Second session of the day, continuing from the entry below. Betty implemented
+`rerank()` herself and asked for a review. **Phase 1 is done and the ablation
+table has its second row.** Most of the session went into explaining a result
+that turned out to be much harder to attribute than to measure.
+
+**The review.** The implementation was correct on every trap the scaffold
+warned about — `(query, doc)` pair order, no truncation, `float()` cast — with
+one real bug: it looped over `queries` and indexed `results[q]`. Harmless while
+the two key sets match, which is why all 32 tests passed, but `--limit N`
+truncates `results` and not `queries`, so the documented smoke-test command died
+with `KeyError`. Betty fixed it. The deeper problem was that `test_rerank.py`
+*couldn't* catch it: `QUERIES` and `RESULTS` had identical keys, so iterating
+either was indistinguishable. Added `q3` to `QUERIES` with no `RESULTS` entry
+plus an explicit `test_iterates_results_not_queries`, then verified the fix by
+reintroducing the bug (11 errors) and restoring.
+
+**The number.** `NDCG@10 0.3159 → 0.3412`, `+0.0253` — **8.1% of the 0.3104
+headroom** the oracle measured on 2026-08-07. `Recall@100` came back identical
+to five decimals (`0.31145`), which is worth more than it looks: reranking may
+only reorder the candidate set, so that column is a free assertion that nothing
+got truncated, holding over all 323 real queries where the fixture covers four
+docs. `main()` now checks it explicitly and errors if it ever moves.
+
+**Explaining the 8% — four states, three of them wrong, all of them reached the
+README before being replaced.** Recording the sequence because each failure is a
+distinct and generalizable trap:
+
+1. *Asserted.* MRR@10 rose `+0.0630` while Recall@10 stayed flat (`+0.0021`).
+   The obvious story: a train/test mismatch in **qrel density** — MS MARCO
+   labels ~1 relevant passage per query, NFCorpus has a median of 16, so the
+   model optimizes "find the single best answer" while NDCG@10 pays for filling
+   ten slots. Tidy, consistent with two real measurements, and untested. It was
+   written into the README as fact before anyone noticed it was a hypothesis.
+2. *"Refuted."* The prediction — capture should fall as more relevant docs
+   become available — was tested by bucketing the 245 queries with headroom,
+   each normalized by its own `oracle − baseline`, and averaging: `+16.4% ·
+   −22.0% · +7.1% · −12.9%`. No trend. README updated to say so.
+3. *Supported.* **The estimator was broken.** A per-query ratio divides by that
+   query's headroom; two queries with headroom near `0.016` and ordinary losses
+   produced ratios of `−9.3` and `−10.7`, enough to drag a 54-query bucket from
+   positive to `−22.0%`. Pooling instead (`sum(gain)/sum(headroom)`, which never
+   divides by an individual near-zero and is built like the corpus-level figure)
+   gives `+14.8% · +19.0% · +9.2% · −1.9%` — the 3–5 bucket flips sign. Spearman
+   on ranks: `rho = −0.19`, one-sided permutation `p ≈ 0.001`, n=245.
+4. *Unattributable.* Baseline NDCG@10 predicts capture equally well (`−0.1924`
+   vs availability's `−0.1912`) and the two correlate with each other at
+   `+0.5716`. Partial either out and both collapse symmetrically
+   (`−0.1009` / `−0.1032`). Headroom is exonerated as a confound — controlling
+   for it, availability *strengthens* to `−0.2129` — but availability and
+   "the bi-encoder was already good here" are the same queries wearing two
+   labels, and the second needs no story about MS MARCO at all.
+
+**Betty broke the deadlock, and the move is the session's real lesson.** Her
+question: if the model is trained to surface one best answer, shouldn't MRR
+improve on dense queries even as NDCG@10 falls? That is a *qualitative*
+prediction, and it is exactly what a correlation cannot deliver — "less room to
+improve" explains any difference in **magnitude**, but it does not predict two
+metrics moving in **opposite directions** on the same queries. It holds, and
+only on the dense bucket:
+
+```
+availability     n   dNDCG@10      dMRR   rel@10 before -> after
+       1-2      84    +0.0422   +0.1004      0.79 -> 0.83
+       3-5      55    +0.0635   +0.0968      1.82 -> 2.00
+      6-10      47    +0.0466   +0.0766      2.62 -> 2.91
+       11+      86    -0.0123   +0.0289      5.78 -> 5.44
+```
+
+With 11+ relevant docs available the reranker still improves rank 1 while
+*evicting* 0.34 relevant docs from the top ten. Noise added to a good ordering
+would push all three down; instead the first position improves and coverage
+degrades. Still short of proof — the dense bucket is also the high-baseline
+bucket — but it is evidence a confound doesn't trivially absorb. The
+generalization, recorded in `LEARNINGS.md`: **when two explanations are
+entangled, don't refine the measurement, find the prediction on which they
+disagree.** Three passes of better statistics could not do what one change of
+question did.
+
+**Attributing the gain in points rather than percentages** (capture is a ratio;
+the headline is a sum) turned up the most actionable thing in the session:
+**86% of the `+0.0253` comes from queries with 1–5 relevant docs available**,
+while the 11+ bucket *subtracts* `1.06` NDCG points — 13% of what the rest
+earned — despite holding the **largest headroom in the dataset** (33.3 points).
+Suppressing the reranker on dense queries alone would give `0.3445` instead of
+`0.3412`. Better still, given the MRR result: blend cross-encoder and bi-encoder
+scores rather than replacing, keeping the rank-1 win without the eviction. That
+is a concrete Phase 2 lever that costs no training.
+
+**Everything the README quotes is now printed by `rerank.py --breakdown`.** The
+analysis was originally scratchpad scripts, which is precisely the gap this repo
+exists to close — a portfolio front door citing numbers no entrypoint can
+regenerate. `main()` gained the full metric set (was NDCG@10 only), and
+`breakdown()` gained per-query win/loss, the pooled/median/mean bucket table,
+the correlation and partial-correlation block, gain attribution, and the
+MRR-vs-NDCG dissociation. The statistics helpers are pinned by seven new tests:
+tie-averaged ranks, Spearman `±1` on monotone input, outlier-immunity, a small
+permutation p on a real trend, and a partial correlation that zeroes a pure
+confound. Query order in `breakdown()` is `sorted()` and the permutation RNG is
+seeded, deliberately — a reported statistic must not drift with dict ordering.
+`p` is still a Monte Carlo estimate (SE ≈ `0.0002` at 20k shuffles) and the
+README says so rather than quoting four significant figures.
+
+**Notes for later.** The cross-encoder's `max_length` is 512, checked early and
+ruled out as a cause — NFCorpus abstracts aren't being truncated to stubs.
+Reading the availability buckets, note that "availability" means *relevant docs
+retrieved into the top-100* (median 3), not relevant docs in the qrels (median
+16); both numbers appear in the README and they are not interchangeable. The
+capture table covers 245 queries (those with headroom) while the gain table
+covers all 323 — the 51 zero-availability queries have zero headroom by
+definition and vanish from any ratio.
+
 ## 2026-08-08 (Phase 1 scaffolded; why reranking precedes the recall work)
 
 Continuation of the 2026-08-07 session below. No metrics moved; this was

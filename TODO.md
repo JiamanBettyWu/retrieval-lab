@@ -4,25 +4,21 @@ Forward-looking state. Session history lives in [SESSIONS.md](SESSIONS.md).
 
 ## Current state
 
-**As of 2026-08-08 (latest session):** Phase 0 is green and **D3 is resolved —
-build Phase 1**: the oracle puts the ceiling at **NDCG@10 0.6263** vs a 0.3159
-baseline, so +0.3104 of headroom is available to a cross-encoder. Phase 1 is now
-**scaffolded with `rerank()` left as a `TODO(human)` for Betty to implement**
-(`847fb53`) — see "Pick up here". All work is pushed (`main` == `origin/main`);
-the repo is still **private** — see D4. Detail in [SESSIONS.md](SESSIONS.md).
-
-> ⚠️ **`pytest` is currently RED on purpose** — 22 pass, 10 error with
-> `NotImplementedError` from the unimplemented `rerank()`. Nothing is broken.
-> It goes fully green when that function lands.
-
-Setup and run commands (the repo became an installable package on 2026-08-07):
+**As of 2026-08-08 (latest session):** **Phase 1 is done.** The cross-encoder
+took NDCG@10 from 0.3159 to **0.3412** — `+0.0253`, or **8.1% of the 0.3104
+headroom** the oracle measured — and the README ablation table has its second
+row. `pytest` is **fully green (40 tests)**. Explaining the modest gain took
+four attempts and the honest answer is in the README; the actionable residue is
+that the reranker *loses* 1.06 NDCG points on dense queries, which is a free
+Phase 2 lever. Detail in [SESSIONS.md](SESSIONS.md).
 
 ```bash
 uv pip install -e '.[dev]'                            # from the repo root, always
-pytest
+pytest                                                # 40 tests, ~8s, no download
 python -m retrieval_lab.evaluate --dataset nfcorpus   # baseline    0.3159
 python -m retrieval_lab.oracle   --dataset nfcorpus   # ceiling     0.6263
-python -m retrieval_lab.rerank   --dataset nfcorpus   # Phase 1 — needs rerank()
+python -m retrieval_lab.rerank   --dataset nfcorpus   # Phase 1     0.3412
+python -m retrieval_lab.rerank   --dataset nfcorpus --breakdown   # the analysis
 ```
 
 ## Open decisions
@@ -32,55 +28,70 @@ python -m retrieval_lab.rerank   --dataset nfcorpus   # Phase 1 — needs rerank
   a web-eng rep, more work
 - **Recommendation:** Gradio — the science (the ablation table) is the star, not
   the UI.
-- **Blocked on:** Phases 1–2 landing first.
+- **Blocked on:** Phase 2 landing first.
 - **If A:** thin `app/` with Gradio. **If B:** reuse the mise FastAPI+React
   pattern.
 
-### D4: Flip the repo public now that Phase 0 is presentable?
+### D4: Flip the repo public now that the Phase 1 row has landed?
 - **Context:** the 2026-07-15 entry set "private for now, public once Phase 0 is
-  presentable" as the plan. Phase 0 now has a baseline, a measured ceiling, a
-  test suite, and a README that leads with the ablation table.
-- **Options:** A) **Flip now** — the headroom story (measuring the ceiling
-  before building) already stands on its own as the portfolio point B) **Wait
-  for Phase 1** — a before/after row makes the table show *movement*, which was
-  the stated deliverable
-- **Recommendation:** B, narrowly. The current table has one real row plus a
-  ceiling; one more row turns it from a baseline into an ablation. Phase 1 is
-  the next task anyway, so the wait is short.
-- **Blocked on:** Betty's call — also worth a skim of `LEARNINGS.md` and
-  `SESSIONS.md` for anything not meant to be public.
-- **If A:** `GH_HOST=github.com gh repo edit --visibility public`, push first.
-- **If B:** revisit once the Phase 1 row lands; nothing to revert.
+  presentable"; the 2026-08-08 entry narrowed that to "wait for a second
+  ablation row so the table shows *movement*." That row now exists, so the
+  original blocker is gone.
+- **Options:** A) **Flip now** — the table has a baseline, a real second row and
+  a measured ceiling, which is the whole portfolio argument B) **Wait for Phase
+  2** — a third row with a fine-tuned encoder is a stronger finish
+- **Recommendation:** A. The stated condition has been met, and Phase 2 is days
+  of training rather than an afternoon — a long time to sit private for a
+  marginal gain in table length.
+- **Blocked on:** Betty's call. Worth skimming `LEARNINGS.md` first: the new
+  entry narrates, in the first person, three wrong turns before the right
+  answer (including an untested claim that reached the README). That is
+  deliberate and arguably the strongest thing in the repo, but it should be a
+  choice rather than a surprise.
+- **If A:** `GH_HOST=github.com gh repo edit --visibility public`.
+- **If B:** revisit when the Phase 2 row lands; nothing to revert.
+
+### D5: How should Phase 2 handle dense queries, where reranking actively hurts?
+- **Context:** on the 86 queries with 11+ relevant docs in the top-100, the
+  cross-encoder *subtracts* 1.06 NDCG points (13% of everything the other
+  buckets earned) while still improving MRR — it promotes one good doc to rank 1
+  and evicts others from the top ten. See the MRR-vs-NDCG table in `README.md`.
+- **Options:** A) **Score blending** — combine cross-encoder and bi-encoder
+  scores (e.g. weighted sum or reciprocal-rank fusion) so rank 1 improves
+  without the eviction; keeps one code path B) **Routing** — detect dense
+  queries and skip reranking them; simpler, but needs a detector and a
+  threshold, and "dense" isn't knowable at query time without the qrels
+  C) **Do nothing** — accept the loss, let the LoRA fine-tune address it
+- **Recommendation:** A. It is the only option that needs no query-time signal
+  the system doesn't have, and the MRR result says the cross-encoder's rank-1
+  judgement is worth keeping even where its full ordering isn't. Ceiling on the
+  win is ~`+0.0033` NDCG@10 (`0.3412 → 0.3445`) from stopping the damage alone.
+- **Blocked on:** nothing — actionable whenever Phase 2 starts.
+- **If A:** add a blend weight as an ablation axis; it earns its own README row.
+  **If B:** the detector is the hard part, and note that a "dense" rule and a
+  "baseline was already good" rule select nearly the same queries (they
+  correlate at 0.57), so it would work without confirming *why*.
+  **If C:** record it as a known regression so Phase 2's numbers stay readable.
 
 ## Needs attention
 
-- ⚠️ **`data/` and `cache/` resolve against the current working directory**, not
-  the package root. Entrypoints must be run from the repo root or BEIR
-  re-downloads elsewhere. Deliberate (anchoring to a computed repo root gets
-  fragile once installed) but it is an assumption baked into `data.py` and
-  `cache.py`.
-- ⚠️ **The retrieval cache key does not cover `retrieve.py`'s contents.** Edit
-  that file without `--refresh` and stale results are served silently — the
-  exact class of failure Phase 0 already lost time to.
+- ⚠️ **The retrieval cache key still does not cover `retrieve.py`'s contents.**
+  Edit that file without `--refresh` and stale results are served silently.
+  Unchanged from previous sessions; called out because Phase 2 will touch
+  retrieval directly and this is the exact trap Phase 0 lost time to.
+- ⚠️ **`data/` and `cache/` resolve against the working directory**, not the
+  package root, so entrypoints must be run from the repo root. Deliberate, but
+  it is an assumption baked into `data.py` and `cache.py`.
+- ⚠️ **The qrel-density explanation is supported but not proven.** The README
+  says so explicitly. If Phase 2 quotes it, keep the hedge — the dense bucket is
+  also the high-baseline bucket, and separating them needs a reranker trained on
+  dense qrels.
 
 ## Pick up here
 
-1. **Implement `rerank()`** in `src/retrieval_lab/rerank.py` — scaffolded with a
-   `TODO(human)` docstring (four steps) and a `raise NotImplementedError` to
-   delete. Betty is writing this one herself. `tests/test_rerank.py` is already
-   written and currently red (10 errors, all `NotImplementedError`); it goes
-   green when the function is correct. Then:
-
-   ```bash
-   pytest tests/test_rerank.py                          # fixture first, always
-   python -m retrieval_lab.rerank --dataset nfcorpus --limit 20   # smoke test
-   python -m retrieval_lab.rerank --dataset nfcorpus     # the real number
-   ```
-
-   The two traps the tests exist to catch: build pairs as `(query, doc)` not
-   `(doc, query)`, and **return all ~100 candidates reordered — never truncate
-   to 10** (that collapses Recall@100 and breaks comparability with Phase 0).
-2. **Fill the Phase 1 ablation row** in `README.md`, and read the result against
-   the **0.6263 oracle ceiling, not 1.0**. `rerank.py`'s output prints the
-   "% of available headroom captured" for exactly this reason.
-3. **Settle D4** — flip the repo public once that row lands.
+1. **Settle D4** — the condition it was waiting on has been met.
+2. **Start Phase 2** (LoRA fine-tune on MS MARCO, evaluate zero-shot on the
+   untouched BEIR set), carrying D5's blending idea in as an ablation axis.
+3. When Phase 2 lands a number, add its row to the README table and re-read it
+   against the **0.6263 ceiling** — though note Phase 2 raises that ceiling by
+   changing the candidate set, so `oracle.py` must be re-run, not reused.
