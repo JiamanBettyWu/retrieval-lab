@@ -4,13 +4,14 @@ Forward-looking state. Session history lives in [SESSIONS.md](SESSIONS.md).
 
 ## Current state
 
-**As of 2026-08-08 (latest session):** **Phase 1 is done.** The cross-encoder
-took NDCG@10 from 0.3159 to **0.3412** — `+0.0253`, or **8.1% of the 0.3104
-headroom** the oracle measured — and the README ablation table has its second
-row. `pytest` is **fully green (40 tests)**. Explaining the modest gain took
-four attempts and the honest answer is in the README; the actionable residue is
-that the reranker *loses* 1.06 NDCG points on dense queries, which is a free
-Phase 2 lever. Detail in [SESSIONS.md](SESSIONS.md).
+**As of 2026-08-08 (latest session):** **Phase 1 is done and the repo is
+public** — https://github.com/JiamanBettyWu/retrieval-lab (D4 resolved). The
+cross-encoder took NDCG@10 from 0.3159 to **0.3412** — `+0.0253`, or **8.1% of
+the 0.3104 headroom** the oracle measured. `pytest` is **fully green (40
+tests)**. Explaining the modest gain took four attempts and the honest answer is
+in the README; the actionable residue is that the reranker *loses* 1.06 NDCG
+points on dense queries, which is a free Phase 2 lever (D5). Detail in
+[SESSIONS.md](SESSIONS.md).
 
 ```bash
 uv pip install -e '.[dev]'                            # from the repo root, always
@@ -31,25 +32,6 @@ python -m retrieval_lab.rerank   --dataset nfcorpus --breakdown   # the analysis
 - **Blocked on:** Phase 2 landing first.
 - **If A:** thin `app/` with Gradio. **If B:** reuse the mise FastAPI+React
   pattern.
-
-### D4: Flip the repo public now that the Phase 1 row has landed?
-- **Context:** the 2026-07-15 entry set "private for now, public once Phase 0 is
-  presentable"; the 2026-08-08 entry narrowed that to "wait for a second
-  ablation row so the table shows *movement*." That row now exists, so the
-  original blocker is gone.
-- **Options:** A) **Flip now** — the table has a baseline, a real second row and
-  a measured ceiling, which is the whole portfolio argument B) **Wait for Phase
-  2** — a third row with a fine-tuned encoder is a stronger finish
-- **Recommendation:** A. The stated condition has been met, and Phase 2 is days
-  of training rather than an afternoon — a long time to sit private for a
-  marginal gain in table length.
-- **Blocked on:** Betty's call. Worth skimming `LEARNINGS.md` first: the new
-  entry narrates, in the first person, three wrong turns before the right
-  answer (including an untested claim that reached the README). That is
-  deliberate and arguably the strongest thing in the repo, but it should be a
-  choice rather than a surprise.
-- **If A:** `GH_HOST=github.com gh repo edit --visibility public`.
-- **If B:** revisit when the Phase 2 row lands; nothing to revert.
 
 ### D5: How should Phase 2 handle dense queries, where reranking actively hurts?
 - **Context:** on the 86 queries with 11+ relevant docs in the top-100, the
@@ -89,9 +71,11 @@ python -m retrieval_lab.rerank   --dataset nfcorpus --breakdown   # the analysis
 
 ## Pick up here
 
-1. **Settle D4** — the condition it was waiting on has been met.
-2. **Start Phase 2** (LoRA fine-tune on MS MARCO, evaluate zero-shot on the
+1. **Start Phase 2** (LoRA fine-tune on MS MARCO, evaluate zero-shot on the
    untouched BEIR set), carrying D5's blending idea in as an ablation axis.
-3. When Phase 2 lands a number, add its row to the README table and re-read it
+2. When Phase 2 lands a number, add its row to the README table and re-read it
    against the **0.6263 ceiling** — though note Phase 2 raises that ceiling by
    changing the candidate set, so `oracle.py` must be re-run, not reused.
+3. Optional, now that the repo is public: pin it to the GitHub profile
+   (Settings → Profile → pinned repositories) if it's meant to be front-and-
+   centre for the GenAI pivot.

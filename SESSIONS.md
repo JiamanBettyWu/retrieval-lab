@@ -119,6 +119,28 @@ capture table covers 245 queries (those with headroom) while the gain table
 covers all 323 — the 51 zero-availability queries have zero headroom by
 definition and vanish from any ratio.
 
+**D4 resolved: the repo is public** —
+https://github.com/JiamanBettyWu/retrieval-lab. The condition set on 2026-07-15
+("public once Phase 0 is presentable") and narrowed on 2026-08-08 ("wait for a
+second ablation row so the table shows movement") was met by the Phase 1 row.
+Argument for not waiting on Phase 2: that's days of LoRA training, a long hold
+for one more row, and a private repo contributes nothing to a job search.
+Pre-flip checks: no secrets anywhere in history, no stray committed files, one
+author identity. The author email (`bettyjiamanwu@gmail.com`) is exposed in all
+16 commit objects and will stay that way — a rewrite was cheap at this size and
+deliberately declined, since the address is already public elsewhere. Set a
+description and eight topics at the same time. Still open if wanted: pinning the
+repo to the GitHub profile.
+
+**Also documented `uv sync` (`512a6f1`).** `uv.lock` was committed this session
+but the documented setup (`uv pip install -e '.[dev]'`) ignores it and resolves
+fresh — a hole in a repo whose claims are version-dependent, since metrics shift
+with model and tokenizer releases. `uv sync --locked --all-extras` is now in
+README and CLAUDE.md with two caveats found via `--dry-run` rather than by
+mutating the venv: sync **prunes** to match the lock exactly (unlike additive
+`uv pip install`), and treats extras as exact too — `--extra dev` alone would
+have uninstalled Weave and 62 other packages.
+
 ## 2026-08-08 (Phase 1 scaffolded; why reranking precedes the recall work)
 
 Continuation of the 2026-08-07 session below. No metrics moved; this was
