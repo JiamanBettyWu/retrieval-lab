@@ -193,3 +193,47 @@ across the two runs (0.31145).** Reranking may only reorder the candidate set,
 so that column is a free assertion that nothing got truncated to top-10 — and it
 holds over all 323 real queries, where the fixture suite covers four docs. Look
 for the invariant your pipeline can't help but satisfy, then check it anyway.
+
+## 2026-08-12 — the lockfile earned its keep before it was tested
+
+Phase 2 needs `peft`, `accelerate` and `datasets`, and adding them is the first
+change to this repo's dependency set since the numbers in the README were
+published. The obvious way to do it is to add the deps and start training. The
+useful way is to add the deps, land them in a commit that touches *nothing*
+else, and find out what moved before any new code exists to blame.
+
+Nothing moved, and the way that was established is the part worth keeping.
+Three checks, increasing in strength:
+
+1. **The lock diff.** `uv lock` added exactly `peft`, `accelerate` and
+   `psutil`; no existing package changed version. The remaining ~100 lines of
+   diff are dependency *edges* being regrouped, not versions — worth reading
+   the diff for `version =` lines specifically rather than eyeballing the
+   line count and assuming.
+2. **A full `--refresh` recompute.** All seven published figures came back
+   identical to four decimals: baseline `0.3159`, rerank `0.3412`, MRR `0.5046`
+   → `0.5675`, ceiling `0.6263`, 8.1% of headroom. A cached run would have
+   proved nothing here — the cache is the thing under suspicion.
+3. **A byte-for-byte diff of the candidate set.** Copied the cached top-100 out
+   before refreshing, `cmp`'d it after. **Identical, floats included.** Matching
+   metrics make identical candidates near-certain; this makes them a fact,
+   which is the same distinction `cache.py` exists to enforce one level down.
+   Two encode passes over the same corpus on the same hardware produced
+   bit-identical cosine scores — MPS non-determinism is a thing I'd have
+   hedged about, and now don't have to.
+
+The reason to bother: this repo's whole claim is that its numbers mean
+something. If the lock bump had arrived tangled with `finetune.py`, a metric
+shift would have had two candidate causes and no cheap way to separate them —
+the same "four possible causes" trap Phase 0 lost an afternoon to with
+`NDCG@10 = 0.0000`. Isolating the commit costs one extra `git commit` and buys
+an unambiguous bisect point. Do it before the interesting change, not after.
+
+Two smaller things. `uv sync --all-extras` uninstalled an ipykernel tree that
+had been `uv pip install`ed ad hoc — exactly the documented behaviour (sync
+makes the venv *match* the lock, it doesn't merely add), but the first time it
+has actually taken something away here. And `cache/reranked_nfcorpus.json`
+turned out to be an orphan: `rerank.py` re-scores unconditionally and never
+reads or writes it. Deleted. Retrieval is the *only* cached stage, which is
+why getting the Phase 2 checkpoint into the cache key is a sufficient fix and
+not merely a partial one — there is no second stale-value channel downstream.
