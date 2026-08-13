@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Setup & commands
 
 ```bash
-uv venv && uv pip install -e '.[dev]'      # add ,tracing for Weave: -e '.[dev,tracing]'
+uv venv && uv pip install -e '.[dev]'      # extras: dev, tracing (Weave), train (Phase 2 LoRA)
 export WANDB_API_KEY=...                   # optional — tracing is inert without it
 
 uv sync --locked --all-extras              # reproduce the ablation table's exact versions

@@ -25,6 +25,10 @@ uv venv && uv pip install -e '.[dev]'    # add ,tracing for Weave: -e '.[dev,tra
 export WANDB_API_KEY=...                 # optional — tracing is inert without it
 ```
 
+Three optional extras, all opt-in: **`dev`** (pytest), **`tracing`** (Weave),
+and **`train`** (`peft` + `accelerate` + `datasets` — Phase 2 fine-tuning only,
+so reproducing a *retrieval* number never pulls a training stack).
+
 An editable install, so `retrieval_lab` is importable from anywhere while the
 source stays live under `src/`.
 
