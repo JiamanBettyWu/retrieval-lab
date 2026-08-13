@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 data/
 cache/
+# Phase 2 LoRA adapters — rebuildable from the lockfile + recorded config
+models/
 reports/*.json
 .env
 .weave/
