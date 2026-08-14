@@ -25,7 +25,7 @@ from beir.retrieval.evaluation import EvaluateRetrieval
 
 from .cache import cached_retrieval
 from .data import load_beir
-from .retrieve import BI_ENCODER, load_encoder, retrieve
+from .retrieve import BI_ENCODER, MODEL_HELP, load_encoder, retrieve
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("retrieval_lab")
@@ -90,14 +90,16 @@ def per_query_ndcg(qrels: dict, run: dict, k: int) -> dict:
     return {q: m[f"ndcg_cut_{k}"] for q, m in ev.evaluate(run).items()}
 
 
-def main(dataset: str, top_k: int, refresh: bool) -> None:
+def main(dataset: str, top_k: int, refresh: bool, model: str = BI_ENCODER) -> None:
     corpus, queries, qrels = load_beir(dataset)
 
     # The same cached candidates evaluate.py scored — that identity is the
     # whole point of caching, and what makes the comparison below meaningful.
+    # It holds per --model: a ceiling bounds the candidate set it was measured
+    # over, so a fine-tuned encoder needs its own oracle run (R3).
     results = cached_retrieval(
-        dataset, BI_ENCODER, top_k,
-        compute=lambda: retrieve(load_encoder(BI_ENCODER), corpus, queries, top_k=top_k),
+        dataset, model, top_k,
+        compute=lambda: retrieve(load_encoder(model), corpus, queries, top_k=top_k),
         refresh=refresh,
     )
 
@@ -131,7 +133,8 @@ def main(dataset: str, top_k: int, refresh: bool) -> None:
     b, o = base_ndcg["NDCG@10"], orc_ndcg["NDCG@10"]
     headroom = o - b
 
-    log.info("\n=== Phase 1 ceiling (BEIR/%s, top-%d candidates) ===", dataset, top_k)
+    log.info("\n=== Phase 1 ceiling (BEIR/%s, top-%d candidates from %s) ===",
+             dataset, top_k, model)
     log.info("baseline NDCG@10 (bi-encoder order) : %.4f", b)
     log.info("oracle   NDCG@10 (perfect reorder)  : %.4f", o)
     log.info("available headroom for reranking    : %+.4f  (%.0f%% relative)",
@@ -157,5 +160,6 @@ if __name__ == "__main__":
     p.add_argument("--dataset", default="nfcorpus")
     p.add_argument("--top-k", type=int, default=100)
     p.add_argument("--refresh", action="store_true")
+    p.add_argument("--model", default=BI_ENCODER, help=MODEL_HELP)
     args = p.parse_args()
-    main(args.dataset, args.top_k, args.refresh)
+    main(args.dataset, args.top_k, args.refresh, args.model)

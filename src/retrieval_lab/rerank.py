@@ -28,7 +28,7 @@ from .cache import cached_retrieval
 from .data import load_beir
 from .observability import op
 from .oracle import oracle_rerank
-from .retrieve import BI_ENCODER, doc_text, load_encoder, retrieve
+from .retrieve import BI_ENCODER, MODEL_HELP, doc_text, load_encoder, retrieve
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("retrieval_lab")
@@ -337,12 +337,12 @@ def _metric_dissociation(qrels, results, reranked, base, rr) -> None:
 
 
 def main(dataset: str, top_k: int, refresh: bool, limit: int | None,
-         show_breakdown: bool) -> None:
+         show_breakdown: bool, model: str = BI_ENCODER) -> None:
     corpus, queries, qrels = load_beir(dataset)
 
     results = cached_retrieval(
-        dataset, BI_ENCODER, top_k,
-        compute=lambda: retrieve(load_encoder(BI_ENCODER), corpus, queries, top_k=top_k),
+        dataset, model, top_k,
+        compute=lambda: retrieve(load_encoder(model), corpus, queries, top_k=top_k),
         refresh=refresh,
     )
 
@@ -366,8 +366,12 @@ def main(dataset: str, top_k: int, refresh: bool, limit: int | None,
     ceiling = metrics(oracle_rerank(results, qrels))
     b, r, c = base["NDCG@10"], rr["NDCG@10"], ceiling["NDCG@10"]
 
-    log.info("\n=== Phase 1 (BEIR/%s, rerank top-%d) ===", dataset, top_k)
-    log.info("%-14s %10s %10s %10s", "", "Phase 0", "Phase 1", "delta")
+    log.info("\n=== Phase 1 (BEIR/%s, rerank top-%d from %s) ===", dataset, top_k, model)
+    # Columns are named for the STAGE, not the phase. They used to read
+    # "Phase 0"/"Phase 1", which was true only while --model was hardcoded to
+    # the baseline: run this over a Phase 2 adapter and the left column is
+    # Phase 2 output, so the old header mislabelled every number under it.
+    log.info("%-14s %10s %10s %10s", "", "retrieved", "reranked", "delta")
     # dict.fromkeys dedupes while keeping order — at --top-k 10 the last two
     # keys collapse into one and the row would otherwise print twice.
     for key in dict.fromkeys(("NDCG@10", "MRR@10", "Recall@10", f"Recall@{top_k}")):
@@ -404,5 +408,6 @@ if __name__ == "__main__":
                    help="rerank only the first N queries (fast smoke test while implementing)")
     p.add_argument("--breakdown", action="store_true",
                    help="per-query win/loss and headroom bucketed by relevant-doc count")
+    p.add_argument("--model", default=BI_ENCODER, help=MODEL_HELP)
     args = p.parse_args()
-    main(args.dataset, args.top_k, args.refresh, args.limit, args.breakdown)
+    main(args.dataset, args.top_k, args.refresh, args.limit, args.breakdown, args.model)

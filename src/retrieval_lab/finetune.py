@@ -147,10 +147,33 @@ def build_lora_model(rank: int, alpha: int, dropout: float = 0.1):
     return model
 
 
+def _summarize_datasets(inputs: dict) -> dict:
+    """Replace the Dataset args with a one-line shape before Weave uploads them.
+
+    Without this the 2026-08-14 run's trace was an 80,466,260-byte payload —
+    weave serializes `train_dataset`/`eval_dataset` as call inputs, so 110k rows
+    of MS MARCO text went up with the call and the server rejected it at 413
+    (limit 67,108,864). The run itself was unaffected; only the trace was lost,
+    which is the worst failure shape for observability code: silent until the
+    moment you want the record.
+
+    What replaces it is strictly more useful than the rows anyway — the row
+    count and column ORDER are what a later reader needs, because MNRL reads
+    columns positionally as (anchor, positive, negative).
+    """
+    out = dict(inputs)
+    for key in ("train_dataset", "eval_dataset"):
+        ds = out.get(key)
+        if ds is not None:
+            out[key] = {"rows": getattr(ds, "num_rows", None),
+                        "columns": list(getattr(ds, "column_names", []) or [])}
+    return out
+
+
 # ---------------------------------------------------------------------------
 # YOURS — the training loop
 # ---------------------------------------------------------------------------
-@op  # traced in Weave when init_weave() ran; a no-op otherwise
+@op(postprocess_inputs=_summarize_datasets)  # traced when init_weave() ran; a no-op otherwise
 def train(model, train_dataset: Dataset, eval_dataset: Dataset, out_dir: Path, lr: float,
           batch_size: int,  epochs: float, max_steps: int = -1, seed: int = 42) -> float:
     """Fit the adapter with MultipleNegativesRankingLoss. Returns steps/sec.

@@ -13,24 +13,24 @@ from beir.retrieval.evaluation import EvaluateRetrieval
 from .cache import cached_retrieval
 from .data import load_beir
 from .observability import init_weave
-from .retrieve import BI_ENCODER, load_encoder, retrieve
+from .retrieve import BI_ENCODER, MODEL_HELP, load_encoder, retrieve
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("retrieval_lab")
 
 
-def main(dataset: str, top_k: int, refresh: bool = False) -> None:
+def main(dataset: str, top_k: int, refresh: bool = False, model: str = BI_ENCODER) -> None:
     init_weave()  # tracing on if weave + WANDB_API_KEY present; inert otherwise
 
     log.info("Loading BEIR/%s ...", dataset)
     corpus, queries, qrels = load_beir(dataset)
     log.info("corpus=%d docs | queries=%d | qrels=%d", len(corpus), len(queries), len(qrels))
 
-    log.info("Retrieving top-%d with the bi-encoder ...", top_k)
+    log.info("Retrieving top-%d with %s ...", top_k, model)
     results = cached_retrieval(
-        dataset, BI_ENCODER, top_k,
+        dataset, model, top_k,
         # a thunk, so a cache hit never loads the encoder at all
-        compute=lambda: retrieve(load_encoder(BI_ENCODER), corpus, queries, top_k=top_k),
+        compute=lambda: retrieve(load_encoder(model), corpus, queries, top_k=top_k),
         refresh=refresh,
     )
 
@@ -41,7 +41,7 @@ def main(dataset: str, top_k: int, refresh: bool = False) -> None:
     mrr10 = mrr["MRR@10"]
     recall_k = recall[f"Recall@{top_k}"]
 
-    log.info("\n=== Phase 0 baseline (BEIR/%s, all-MiniLM-L6-v2) ===", dataset)
+    log.info("\n=== Phase 0 baseline (BEIR/%s, %s) ===", dataset, model)
     log.info("NDCG@10       : %.4f", ndcg10)
     log.info("MRR@10        : %.4f", mrr10)
     log.info("Recall@%-7d: %.4f", top_k, recall_k)
@@ -66,5 +66,6 @@ if __name__ == "__main__":
     p.add_argument("--top-k", type=int, default=100)
     p.add_argument("--refresh", action="store_true",
                    help="recompute retrieval, ignoring the cache (use after editing retrieve.py)")
+    p.add_argument("--model", default=BI_ENCODER, help=MODEL_HELP)
     args = p.parse_args()
-    main(args.dataset, args.top_k, args.refresh)
+    main(args.dataset, args.top_k, args.refresh, args.model)

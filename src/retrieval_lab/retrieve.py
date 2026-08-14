@@ -11,6 +11,15 @@ from .observability import op
 
 BI_ENCODER = "sentence-transformers/all-MiniLM-L6-v2"
 
+# Shared by every entrypoint's --model flag. The cache-key note is the load-bearing
+# part: cache_path() keys on this string, so a local adapter path and the hub
+# baseline never collide, but two DIFFERENT adapters written to the same path
+# would. Give each fine-tune run its own --tag, and the paths stay distinct.
+MODEL_HELP = (
+    "bi-encoder to retrieve with: a hub id, or a path to a fine-tuned adapter "
+    "(e.g. models/lora-r16-a32-lr2e5-100k). Keys the retrieval cache."
+)
+
 
 def load_encoder(name: str = BI_ENCODER) -> SentenceTransformer:
     return SentenceTransformer(name)
