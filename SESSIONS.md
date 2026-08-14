@@ -10,6 +10,82 @@ Older entries archived in [`sessions/`](sessions/) — 2026-07-15 through
 
 ---
 
+## 2026-08-14 (Phase 2 lands — the fine-tune loses, and a control turns that into a finding)
+
+Phase 2 completed end to end and **the fine-tune lost**: NFCorpus NDCG@10
+`0.3159 -> 0.2725`, −13.7% relative. Every number and its mechanism is recorded
+in `LEARNINGS.md` (2026-08-14, "the fine-tune lost, and the control is what made
+that a finding") and in the new Phase 2 section of `README.md`; what follows is
+the order things happened in and why each call was made.
+
+**Reading the overnight run, and resolving D7.** The 2e-5 run finished clean —
+16 eval points, monotone `0.6263 -> 0.3960`, no upturn, so `load_best_model_at_end`
+had nothing to rescue. Train loss opened at ~0.70 rather than `ln(32) = 3.47`,
+which said the base encoder was already competent at MNRL and this was refinement
+rather than learning. The flat tail was **confounded**: the linear scheduler
+decays to ~0 over `max_steps`, so "converged" and "out of learning rate" predict
+the same curve. That confound is what promoted D7 from a suspicion about the
+inherited `2e-5` default into a question the data could not answer, and it was
+resolved by running 1e-4 and 5e-4 (dev loss `0.3443`, `0.3180`), then 1e-3
+(`0.3129`) when 5e-4 won *at the edge of the grid*. A boundary winner is a wall,
+not an optimum — the search only stopped once returns fell to `−0.005` per
+doubling and the dev curve went non-monotone, which is the stability edge showing
+up as variance rather than as divergence. **D7 resolves to lr 1e-3**, selected on
+MS MARCO dev loss alone per R1. Corrected cost along the way: the smoke run's
+"~30 min per config" ignored evaluation, and real throughput was ~0.85 steps/sec,
+so each config was ~60 min.
+
+**The `--model` blocker (`5f20446`, pushed).** `evaluate.py`, `oracle.py` and
+`rerank.py` all hardcoded `BI_ENCODER`, so nothing could evaluate an adapter.
+Each now takes `--model` (hub id or local path) threaded to `cached_retrieval`
+and `load_encoder`, with `MODEL_HELP` in `retrieve.py` documenting the cache-key
+caveat once. The check that mattered was not the CLI but the adapter being *live*
+at inference — 22,860,672 params (base + 147,456) and cosine 0.9625 to base,
+because a silently-unloaded adapter would have produced a Phase 2 number
+identical to 0.3159 and an hour of blaming LoRA. The default path was verified
+unchanged: same cache file, `0.3159` reproduced exactly. Two fixes rode along —
+`@op` on `train()` was serialising both Datasets as call inputs and killing the
+trace at 413 on an 80MB payload (`postprocess_inputs` now substitutes row count
+and column order, and column *order* is the more useful record since MNRL reads
+columns positionally), and `rerank.py`'s result columns read "Phase 0 / Phase 1",
+true only while `--model` was hardcoded, now "retrieved / reranked".
+
+**The sequencing constraint that shaped the whole session.** D7 option A said
+NFCorpus stays untouched until a winner is picked, while the old "Pick up here"
+said evaluate the adapter once. Those conflict, and resolving D7 first is what
+kept R1 intact. Everything after this point spent NFCorpus looks deliberately,
+with the count stated before each one — seven in total, all reported per R2.
+
+**The hypothesis that was wrong, and what replaced it.** The predicted shape of
+the damage was a slope monotone in learning rate (more MS MARCO specialisation,
+worse biomedical transfer). Running all four adapters refuted it: dev loss spans
+21%, NFCorpus spans 1.5%, and all four sit at ~0.272 despite embedding drift from
+base growing cleanly with lr. `checkpoint-200` of the 2e-5 run (cosine 0.9998 to
+base, still inside warmup) scored baseline-within-noise, bounding the other end —
+so the damage accrues between step 200 and one epoch and then **saturates**. The
+per-query and per-bucket diff came free from the cached runs and ruled out the D5
+dense-query story: the degradation is diffuse, every bucket down, recall included.
+
+**The control was the decision that mattered.** Six looks in, the results still
+supported two incompatible readings: *the fine-tune is broken* versus *this is
+what MS MARCO specialisation costs on biomedical text*. One evaluation of
+`msmarco-MiniLM-L6-cos-v5` (`0.2584`, **below** the fine-tune) settled it — the
+three models order along one specialisation axis and the fine-tune paid 75% of
+the full penalty. Without it the write-up would have claimed a broken recipe,
+which was the wrong claim. It also relocated the saturation floor: the adapters
+converge at 0.272 but the axis runs to 0.258, making adapter **capacity** the
+likely explanation rather than training dynamics — which is what the proposed D8
+tests.
+
+**Written up in the same session, deliberately.** `README.md` gained both Phase 2
+rows, the reference row, **both ceilings** (a ceiling belongs to a candidate set,
+not a dataset — reusing 0.6263 would have scored Phase 2 against a bound it never
+had), and a Phase 2 section that states the method costs outright: no config was
+run twice, so every number is n=1, and the `5e-4 -> 1e-3` gap of `0.0051` that
+decided the winner is exactly the size where that might matter. The repo intro
+was reworded from "prove each improvement" to "measure every change" — the old
+phrasing only made sense while every phase won.
+
 ## 2026-08-14 (Phase 2 trains — finetune.py hand-written, first real run launched)
 
 The Phase 2 stubs got filled in — by Betty, per the working mode set on
