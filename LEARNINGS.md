@@ -296,3 +296,126 @@ difference 0.0. Practically, that means a Phase 2 run that lands exactly on
 0.3159 has not trained rather than failed to help. And `save_pretrained` writes
 593,072 bytes for r=16 on query+value (147,456 params x 4B + header), which is
 what lets `models/` stay gitignored as genuinely rebuildable.
+
+## 2026-08-14 — the fine-tune lost, and the control is what made that a finding
+
+Phase 2 finished and NFCorpus NDCG@10 went **down**: `0.3159 -> 0.2725`, a 13.7%
+relative drop, with Recall@100 falling `0.3115 -> 0.2950` alongside it. R4 said
+the fine-tune was allowed to lose. It did.
+
+The first thing worth recording is that the loss was believable *before* it was
+interpreted. `NDCG@10 = 0.0000` has a known cause here; `0.2725` does not, so it
+needed its own checks: the saved adapter carries the same three modules as the
+baseline (`Transformer -> Pooling -> Normalize`, `max_seq_length=256`), and
+`oracle.py` passed both invariants on the *new* candidate set — `oracle >=
+baseline` on all 323 queries, and `oracle == arithmetic_ceiling` to six decimals
+at `0.609627`. That second check derives the ceiling independently of the sort
+under test, so its agreement over a candidate set it had never seen says the
+pipeline is intact and only the embeddings moved. R3 also settled itself: the
+ceiling did not carry over, `0.6263 -> 0.6096`.
+
+**A ceiling that moves is the more damaging result.** Reordering cannot change
+which documents were retrieved, so an unchanged candidate set implies an
+unchanged ceiling. This one dropped, which locates the failure in *retrieval*
+rather than in *ranking* — and nothing downstream recovers a document that never
+entered the top 100.
+
+The expected shape of the damage was a slope: more MS MARCO specialisation,
+worse biomedical transfer, monotone in learning rate. All four adapters say
+otherwise.
+
+| lr | dev loss | cos to base | NFCorpus NDCG@10 |
+|---|---|---|---|
+| — | — | 1.0000 | 0.3159 |
+| 2e-5 | 0.3960 | 0.9757 | 0.2724 |
+| 1e-4 | 0.3443 | 0.9438 | 0.2737 |
+| 5e-4 | 0.3180 | 0.9473 | 0.2765 |
+| 1e-3 | 0.3129 | 0.9294 | 0.2725 |
+
+Dev loss spans 21%; NFCorpus spans 1.5%. The middle column is what makes the
+flatness strange rather than merely negative — embedding drift from the base
+model **does** grow with learning rate, so the models are genuinely and
+progressively different. The drift scales and the damage does not, which is the
+signature of a quantity that has hit a floor rather than one still responding to
+its driver. Had the damage been proportional to distance moved, 1e-3 (which
+drifted three times as far as 2e-5) would have been three times as damaged.
+
+`checkpoint-200` of the 2e-5 run bounds the other end. At step 200 — 6.4% of an
+epoch, still inside the `warmup_ratio=0.1` ramp — the encoder sits at cosine
+**0.9998** to base and scores `NDCG@10 0.3143`, `Recall@100 0.3132`,
+`MRR@10 0.5056`: baseline within noise, recall and MRR fractionally above it. So
+the damage is neither instantaneous nor proportional. It accrues somewhere
+between step 200 and one epoch and then stops. The shape in between was not
+measured and three more checkpoints would be needed to trace it; the honest
+claim is "saturates before one epoch", not "saturates at step N".
+
+Which yields the finding worth keeping: **zero-shot transfer degradation
+saturates before in-domain fit does.** By one epoch, 2e-5 and 1e-3 have paid an
+identical NFCorpus penalty despite 2e-5 being visibly undertrained on MS MARCO —
+its own eval curve was still descending when it ran out of steps. The intuitive
+mitigation, "use a gentler learning rate to preserve general ability", is
+therefore strictly dominated: the same penalty for a worse specialist. The
+levers that could work are different in kind — fewer total steps, mixed-domain
+replay, or less adapter capacity.
+
+**The control is what turned all of this from a post-mortem into a result.**
+`msmarco-MiniLM-L6-cos-v5` — same backbone size, MS MARCO tuned by people who do
+it full-time — scores `NDCG@10 0.2584`, `Recall@100 0.2342` on NFCorpus. That is
+*below* the fine-tune, and 0.0575 below the general-purpose baseline. So the
+three models order cleanly along one axis of specialisation, `0.3159 -> 0.2725
+-> 0.2584`, and the fine-tune paid 75% of the full penalty. Nothing was broken;
+the encoder was moved toward MS MARCO, and this is what that move costs on
+biomedical text. Without the control the same numbers support "our recipe is
+wrong", which is a different claim and would have been the wrong one. It cost
+one look.
+
+It also relocates the floor. The four adapters converge at 0.272, but the axis
+runs to 0.258, so the saturation point is probably not a law of training
+dynamics — it is more likely the **capacity ceiling of 147,456 trainable
+parameters on `query`+`value`**, exhausted identically by every learning rate.
+That predicts a larger `rank`, or adding `key`, would push closer to 0.258.
+Untested. The control differs from the fine-tune in several ways at once (full
+fine-tune, different loss, different data recipe), so it is a reference point
+and not a one-variable comparison; it cannot attribute the 0.0141 gap to LoRA.
+
+Where the damage lands, from the cached runs at no extra cost: 69 queries
+improved (mean `+0.0895`), 136 degraded (mean `-0.1487`), 118 unchanged, worst
+single query `-0.9197`. Bucketed by qrel density the drop is `-0.0529` (1–3
+relevant, n=62), `-0.0225` (4–10, n=67), `-0.0477` (11+, n=194), with recall down
+in every bucket. **Diffuse, not a collapsed subset** — and specifically not the
+D5 dense-query story, which the aggregate number alone could not have ruled out.
+
+Then the part that makes the architecture look good rather than the encoder look
+bad. Reranking the degraded candidates gives `0.2725 -> 0.3407`, against Phase
+1's `0.3412` from baseline candidates. **A first stage 13.7% worse ends up 0.15%
+worse end to end.** The cross-encoder does not care what order candidates arrive
+in, only that they arrive, and Recall@100 only fell 0.0165 — so the two-stage
+design absorbed nearly all of a substantial first-stage regression. One dataset,
+n=1, but it is the kind of claim the ablation table exists to support. The
+headroom-capture figure needs care here: it reads 20.2% against Phase 1's 8.1%,
+which is the denominator moving rather than the reranker improving. The absolute
+gain is the honest comparison, `+0.0253 -> +0.0682` — more work done because
+there was more mess.
+
+Two methodological notes. The lr search found its winner at the edge of the grid
+twice running, and each extension was cheap relative to how badly a boundary
+winner reads; the search stopped at 1e-3 on a stated rule (returns fell to
+`-0.005` per doubling and the dev curve went non-monotone, bouncing `0.3325 ->
+0.3346 -> 0.3398` mid-run before recovering — the stability edge showing up as
+variance rather than as divergence), which is different from stopping silently.
+And **no configuration was ever run twice**, so every number here is n=1 with no
+estimate of run-to-run variance. The early gaps (0.052, 0.026) are far too large
+for that to matter. The 5e-4/1e-3 gap of 0.0051, which decided the winner, is
+exactly the size where it might.
+
+Housekeeping worth not re-deriving: `@op` on `train()` serialised both Datasets
+as call inputs and the trace died at 413 on an 80,466,260-byte payload — twice,
+since the 1e-4 run had already launched before the fix. `postprocess_inputs`
+substituting row count and column order fixed it (5e-4 uploaded clean), and the
+column *order* is the more useful record anyway, because MNRL reads columns
+positionally. Throughput measured 0.848 / 1.086 / 0.744 / 1.092 steps/sec across
+four runs doing identical work, a ±30% swing from thermals and sleep, so a
+single run's steps/sec is not a number to quote precisely. And `perf_counter`
+disagreed with HF's `train_runtime` by 964s on the 2e-5 run, almost exactly the
+one anomalous 981.7s eval — consistent with the laptop sleeping, since
+`perf_counter` does not tick through sleep on macOS while `time.time` does.

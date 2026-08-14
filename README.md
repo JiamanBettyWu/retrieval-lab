@@ -1,9 +1,10 @@
 # retrieval-lab
 
 A retrieval-quality lab: build a two-stage RAG retriever, LoRA-fine-tune its
-encoder, and **prove** each improvement on a labeled benchmark (BEIR) with
-metrics traced in Weave. Then demo the validated pipeline as an "ask my second
-brain" front door over a personal wiki.
+encoder, and **measure** every change against a labeled benchmark (BEIR) with
+metrics traced in Weave — including the changes that turn out to make things
+worse, which is what Phase 2 did. Then demo the validated pipeline as an "ask my
+second brain" front door over a personal wiki.
 
 > Full plan: [`docs/plan.md`](docs/plan.md). Current state and open decisions:
 > [`TODO.md`](TODO.md).
@@ -62,7 +63,18 @@ python -m retrieval_lab.evaluate --dataset nfcorpus   # the baseline
 python -m retrieval_lab.oracle   --dataset nfcorpus   # the ceiling a reranker could reach
 python -m retrieval_lab.rerank   --dataset nfcorpus   # Phase 1 — cross-encoder rerank
 python -m retrieval_lab.rerank   --dataset nfcorpus --breakdown   # + the analysis below
+
+# Phase 2 — fine-tune, then point the same three entrypoints at the adapter
+python -m retrieval_lab.finetune --tag r16-a32-lr1e3-100k --triples 100000 --k 10000 --lr 1e-3
+python -m retrieval_lab.evaluate --dataset nfcorpus --model models/lora-r16-a32-lr1e3-100k
+python -m retrieval_lab.oracle   --dataset nfcorpus --model models/lora-r16-a32-lr1e3-100k
+python -m retrieval_lab.rerank   --dataset nfcorpus --model models/lora-r16-a32-lr1e3-100k
 ```
+
+`--model` takes a hub id or a local adapter path and **keys the retrieval
+cache**, so the baseline and every fine-tune keep separate candidate sets. The
+`oracle` line is not optional bookkeeping: a ceiling belongs to the candidate set
+it was measured over, so a new retriever needs a new ceiling.
 
 Every number in the Phase 1 section below comes from that last command — the
 per-query win/loss counts and the bucket table included, so the analysis is
@@ -88,14 +100,28 @@ overlap with the qrels and reports `0.0` — which reads as "weak model," not
 |---|---|---|---|---|
 | Phase 0 · bi-encoder | `all-MiniLM-L6-v2` | **0.3159** | **0.5046** | **0.3115** |
 | Phase 1 · + rerank | `+ cross-encoder/ms-marco-MiniLM-L-6-v2` | **0.3412** | **0.5675** | **0.3115** |
-| Phase 2 · LoRA encoder | fine-tuned on MS MARCO | | | |
-| _ceiling_ · **oracle rerank** | _perfect reorder of the same top-100_ | _0.6263_ | — | _0.3115_ |
+| Phase 2 · LoRA encoder | fine-tuned on MS MARCO (r=16, α=32, lr 1e-3) | **0.2725** | **0.4482** | **0.2950** |
+| Phase 2 · + rerank | LoRA encoder `+` the same cross-encoder | **0.3407** | **0.5705** | **0.2950** |
+| _reference_ · off-the-shelf | `msmarco-MiniLM-L6-cos-v5` (fully MS MARCO tuned) | _0.2584_ | _0.4554_ | _0.2342_ |
+| _ceiling_ · **oracle rerank** | _perfect reorder of the Phase 0 top-100_ | _0.6263_ | — | _0.3115_ |
+| _ceiling_ · **oracle rerank** | _perfect reorder of the Phase 2 top-100_ | _0.6096_ | — | _0.2950_ |
 
-The last row is not a system — it's the **measuring stick**. `oracle.py` reads
-the qrels and orders each query's retrieved candidates perfectly, but may only
-*reorder* what retrieval found, never add to it. So `0.6263` is the hard upper
-bound on anything a real cross-encoder can reach over these candidates, and the
-Phase 1 row should be read against it rather than against 1.0.
+The ceiling rows are not systems — they're the **measuring stick**. `oracle.py`
+reads the qrels and orders each query's retrieved candidates perfectly, but may
+only *reorder* what retrieval found, never add to it. So `0.6263` is the hard
+upper bound on anything a real cross-encoder can reach over the Phase 0
+candidates, and the Phase 1 row should be read against it rather than against
+1.0.
+
+**There are two ceilings because a ceiling belongs to a candidate set, not to a
+dataset.** Phase 2 changes the retriever, so it changes what reaches the
+reranker, so the bound moves with it — `0.6263 -> 0.6096`. Reusing the Phase 0
+number would have silently scored Phase 2 against a bound it never had.
+
+**Phase 2 lost, and the row stays.** The project's rule is that every NFCorpus
+number obtained gets reported; a table that only fills in when a phase wins is a
+table you cannot trust when it says a phase won. What the loss turned out to
+mean is below.
 
 ### Phase 1 result — +0.0253 NDCG@10, or **8.1% of the available headroom**
 
@@ -309,6 +335,139 @@ equals an **arithmetic ceiling derived independently of the sort under test**
 (`0.626292`, matching to floating point). The first alone would pass for any
 improvement, including one leaving gain on the table; only the second
 establishes that `0.6263` is genuinely the maximum.
+
+### Phase 2 result — the fine-tune lost **−0.0434 NDCG@10**, and the reranker absorbed **99%** of it
+
+LoRA (r=16, α=32, `query`+`value`, 147,456 trainable params = 0.65% of the model)
+on 100k MS MARCO triples with `MultipleNegativesRankingLoss`, evaluated zero-shot
+on the untouched BEIR set. MS MARCO dev loss fell from 0.3960 to 0.3129 across the
+learning-rate search. NFCorpus NDCG@10 fell too — the wrong direction:
+`0.3159 -> 0.2725`, **−13.7% relative**.
+
+**Before interpreting a bad number, rule out a broken one.** `NDCG@10 = 0.0000`
+has a known cause in this repo; `0.2725` doesn't, so it needed its own checks.
+The saved adapter carries the same three modules as the baseline
+(`Transformer -> Pooling -> Normalize`, `max_seq_length=256`), and `oracle.py`
+passed both invariants on the *new* candidate set — `oracle >= baseline` on all
+323 queries, and `oracle == arithmetic_ceiling` at `0.609627` to six decimals.
+The second derives the ceiling independently of the sort under test, so its
+agreement over candidates it had never seen says the pipeline is intact and only
+the embeddings moved.
+
+Recall@100 fell with it (`0.3115 -> 0.2950`), and so did the ceiling
+(`0.6263 -> 0.6096`). **That locates the failure in retrieval, not in ranking.**
+Reordering cannot change which documents were found, so an unchanged candidate
+set implies an unchanged ceiling; this one moved. Nothing downstream recovers a
+document that never entered the top 100.
+
+#### The damage is flat across a 50× learning-rate range
+
+| lr | MS MARCO dev loss | cosine to base | NFCorpus NDCG@10 |
+|---|---|---|---|
+| — (baseline) | — | 1.0000 | **0.3159** |
+| 2e-5 | 0.3960 | 0.9757 | 0.2724 |
+| 1e-4 | 0.3443 | 0.9438 | 0.2737 |
+| 5e-4 | 0.3180 | 0.9473 | 0.2765 |
+| 1e-3 | 0.3129 | 0.9294 | 0.2725 |
+
+Dev loss spans 21%. NFCorpus spans 1.5%. The middle column is what makes that
+strange rather than merely negative: **embedding drift from the base model does
+grow with learning rate** — the four adapters are genuinely, progressively
+different — while the damage doesn't move. A quantity that stops responding to
+its driver has hit a floor. Had the damage been proportional to distance moved,
+1e-3 (which drifted three times as far as 2e-5) would be three times as damaged.
+
+`checkpoint-200` of the 2e-5 run bounds the other end. At step 200 — 6.4% of an
+epoch, still inside the `warmup_ratio=0.1` ramp — the encoder sits at cosine
+**0.9998** to base and scores `NDCG@10 0.3143`, `Recall@100 0.3132`,
+`MRR@10 0.5056`: baseline within noise. So the damage is neither instantaneous
+nor proportional. **It accrues between step 200 and one epoch, then saturates.**
+The shape in between is unmeasured — the claim is "saturates before one epoch",
+not "saturates at step N".
+
+Which gives the finding: **zero-shot transfer degradation saturates before
+in-domain fit does.** By one epoch, 2e-5 and 1e-3 have paid an identical NFCorpus
+penalty despite 2e-5 being visibly undertrained on MS MARCO — its own eval curve
+was still descending when it ran out of steps. So the intuitive mitigation, *use
+a gentler learning rate to preserve general ability*, is **strictly dominated**:
+the same penalty for a worse specialist. The levers that could work are different
+in kind — fewer total steps, mixed-domain replay, or less adapter capacity.
+
+#### The control, and why it changes the claim
+
+`msmarco-MiniLM-L6-cos-v5` — same backbone size, MS MARCO tuned by the
+sentence-transformers team — scores **0.2584** on NFCorpus. *Below* the
+fine-tune, and 0.0575 below the general-purpose baseline.
+
+```
+general purpose ──────────── this fine-tune ─────── fully MS MARCO
+    0.3159                      0.2725                  0.2584
+       └────── −0.0434 ───────────┘                        │
+       └───────────────── −0.0575 ─────────────────────────┘
+```
+
+The three models order cleanly along one axis of specialisation, and the
+fine-tune paid **75%** of the full penalty. **Nothing was broken.** The encoder
+was moved toward MS MARCO, and this is what that move costs on biomedical text.
+Without the control, the same numbers equally support *"our recipe is wrong"* —
+a different claim, and the wrong one. It cost one evaluation.
+
+It also relocates the floor: the four adapters converge at 0.272 but the axis
+runs to 0.258, so the saturation point is likely **the capacity ceiling of
+147,456 parameters on `query`+`value`**, exhausted identically by every learning
+rate — which predicts a larger `rank`, or adding `key`, would push closer to
+0.258. Untested. And the control differs from the fine-tune in several ways at
+once (full fine-tune, different loss, different data recipe), so it is a
+reference point, not a one-variable comparison; it cannot attribute the 0.0141
+gap to LoRA.
+
+#### Where the damage lands, and what the reranker does about it
+
+Per-query against the Phase 0 run: **69 improved** (mean `+0.0895`), **136
+degraded** (mean `−0.1487`), 118 unchanged, worst single query `−0.9197`.
+
+| relevant docs/query | n | ΔNDCG@10 | ΔRecall@100 |
+|---|---|---|---|
+| 1–3 | 62 | −0.0529 | −0.0215 |
+| 4–10 | 67 | −0.0225 | −0.0036 |
+| 11+ | 194 | −0.0477 | −0.0193 |
+
+Every bucket is down, recall included — **diffuse, not a collapsed subset**, and
+specifically *not* the dense-query story the aggregate number alone could not
+have ruled out.
+
+Then the part that makes the architecture look good rather than the encoder look
+bad. Reranking the degraded candidates gives `0.2725 -> 0.3407`, against Phase 1's
+`0.3412` from baseline candidates:
+
+**A first stage 13.7% worse ends up 0.15% worse end to end.** The cross-encoder
+doesn't care what order candidates arrive in, only that they arrive — and
+Recall@100 fell only 0.0165, so nearly all of them still did. The two-stage
+design absorbed almost a full first-stage regression. One dataset, n=1, but it is
+the kind of claim this table exists to support.
+
+One figure needs care: headroom capture reads **20.2%** here against Phase 1's
+8.1%. That is the denominator moving, not the reranker improving — a worse
+initial ordering leaves more headroom. The absolute gain is the honest
+comparison: `+0.0253 -> +0.0682`, more work done because there was more mess.
+
+#### What this cost in method, stated plainly
+
+The learning-rate search found its winner **at the edge of the grid twice
+running**. It stopped at 1e-3 on a stated rule — returns fell to `−0.005` per
+doubling and the dev curve went non-monotone (`0.3325 -> 0.3346 -> 0.3398`
+mid-run before recovering, the stability edge showing up as variance rather than
+divergence) — which is different from stopping silently.
+
+**No configuration was ever run twice**, so every number here is n=1 with no
+estimate of run-to-run variance. The early gaps (0.052, 0.026) are far too large
+for that to matter. The `5e-4 -> 1e-3` gap of `0.0051`, which decided the winner,
+is exactly the size where it might.
+
+Selection used MS MARCO dev loss only — no hyperparameter was chosen by looking
+at NFCorpus. That constraint is why the fine-tune was *able* to lose here: the
+selector was a proxy, and this phase measured how far the proxy and the target
+can diverge.
 
 ### Phase 0 headroom verdict — proceed
 
