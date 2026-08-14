@@ -419,3 +419,38 @@ single run's steps/sec is not a number to quote precisely. And `perf_counter`
 disagreed with HF's `train_runtime` by 964s on the 2e-5 run, almost exactly the
 one anomalous 981.7s eval — consistent with the laptop sleeping, since
 `perf_counter` does not tick through sleep on macOS while `time.time` does.
+
+## 2026-08-14 (pre-registration) — does the Phase 2 loss generalise, or is it NFCorpus?
+
+Written and committed **before the run**, so the prediction cannot be adjusted
+to fit the result.
+
+The Phase 2 finding is n=1 dataset. On NFCorpus the specialisation axis ran
+`all-MiniLM-L6-v2 0.3159 > LoRA 0.2725 > msmarco-MiniLM-L6-cos-v5 0.2584`, and
+the conclusion drawn was that moving toward MS MARCO costs biomedical
+retrieval. That conclusion has a competitor it cannot currently rule out:
+**NFCorpus is a known weak spot for MS MARCO-trained models**, so the axis may
+be a property of this one dataset rather than of specialisation.
+
+The discriminating test needs a BEIR set whose *query distribution* resembles MS
+MARCO's — natural questions rather than biomedical terms. FiQA (57,638 docs, 648
+queries, financial forum QA) fits; SciFact (5,183 docs, 300 queries) is a cheap
+second point, though its claim-style queries are expected to behave more like
+NFCorpus.
+
+**The model to watch is the control, not the adapter.** If domain match is the
+mechanism, the axis should *reverse*:
+
+> **Prediction.** On FiQA, `msmarco-MiniLM-L6-cos-v5` beats `all-MiniLM-L6-v2`
+> on NDCG@10, and the LoRA adapter lands between them or above baseline.
+>
+> **Falsifier.** If the control also loses on FiQA, the domain-match explanation
+> is wrong and the honest reading becomes "MS MARCO tuning costs retrieval
+> quality broadly" — a different and more negative claim than the one currently
+> in the README.
+
+No retraining is involved: the adapters already exist, so this costs encoding
+time only. R2 is extended past NFCorpus for this — every number obtained on any
+dataset gets reported, win or lose. Without that rule, evaluating on new
+datasets until one flatters the fine-tune is exactly the search this repo exists
+to argue against.
