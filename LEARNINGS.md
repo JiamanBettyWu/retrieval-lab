@@ -237,3 +237,62 @@ turned out to be an orphan: `rerank.py` re-scores unconditionally and never
 reads or writes it. Deleted. Retrieval is the *only* cached stage, which is
 why getting the Phase 2 checkpoint into the cache key is a sufficient fix and
 not merely a partial one — there is no second stale-value channel downstream.
+
+## 2026-08-14 — the leak the smoke test was structurally incapable of finding
+
+Phase 2's training path went in today, and the bug worth writing down was not
+in the model. `load_triples` shuffled with seed 42, took the first `n` rows as
+training, and then took the dev slice off the **unshuffled** dataset. Both
+lines look right in isolation. The overlap:
+
+```
+--smoke   n=2,000   k=100    ->     1 of 100 dev rows in training  ( 1.0%)
+real run  n=100,000 k=10,000 -> 2,001 of 10,000 dev rows in training (20.0%)
+```
+
+The leak scales with `n/502,931`, so it is ~1% at smoke size and 20% at the
+size that matters. **The smoke run passed, and could not have done otherwise.**
+It measures throughput and proves the path executes — that is its whole job,
+and it is worth being explicit that "the smoke test is green" carries no
+information about whether the logic is correct. The failure signature is also
+nastier than Phase 0's `NDCG@10 = 0.0000`: a leaking dev set does not produce a
+suspicious number, it produces a plausible one, and it would have read
+*differently* plausible per config depending on how much each memorised —
+corrupting the exact signal R1 says hyperparameters must be selected on.
+
+The fix is one word (`dataset` → `dataset_shuffled`), but the durable part is
+the invariant. Dev = the **last k rows of the same shuffle**, never
+`range(n, n+k)`: the latter is disjoint only for the `n` you happened to use,
+so a later 210k run would quietly swallow a dev slice parked at rows
+100k–110k. Disjointness should be a property of the definition, not a
+coincidence between two row counts. A guard on `n + k` keeps it that way.
+
+Then a free result from measuring rather than assuming: **every row in
+`msmarco-bm25/triplet` carries a unique query** — 100,000 distinct queries in
+100,000 rows, and zero shared between the train and dev slices. So the split is
+query-disjoint, not merely row-disjoint, and dev loss measures generalisation
+to unseen questions. It also retires the MNRL false-negative worry from
+2026-08-12: two rows for one query cannot land in a batch here, because no
+query appears twice anywhere. That does *not* transfer to `triplet-hard`.
+
+**Three library facts that would each have failed silently.** `bias="lora_only"`
+does not mean "only the adapter's biases" — LoRA's `A`/`B` have no biases at
+all, and `tuners_utils.py:497` unfreezes the *base layer's* bias for every
+adapted module. So it trains pretrained weights that `save_pretrained` then
+does not save: a checkpoint that cannot reproduce its own numbers. `bias="none"`
+is the setting that matches the claim "the backbone is frozen".
+`metric_for_best_model="eval_loss"` resolves `greater_is_better=False` on its
+own (`training_args.py:1534` keys off the name ending in `"loss"`) — had it
+defaulted True, `load_best_model_at_end` would have kept the *worst*
+checkpoint, silently. And `fp16` is no longer CUDA-only: `accelerator.py:565`
+lists `mps` as supported for torch >= 2.5.0. It stays off here anyway, because
+`GradScaler` skips overflow steps and would muddy the steps/sec the smoke run
+exists to measure — but the reason is now a measured trade-off rather than an
+inherited belief, which is the difference that matters.
+
+Smaller, and pleasant: LoRA initialises `B` to zeros, so an untrained adapter
+is not merely close to the base model but **bit-identical** — max abs embedding
+difference 0.0. Practically, that means a Phase 2 run that lands exactly on
+0.3159 has not trained rather than failed to help. And `save_pretrained` writes
+593,072 bytes for r=16 on query+value (147,456 params x 4B + header), which is
+what lets `models/` stay gitignored as genuinely rebuildable.

@@ -10,6 +10,103 @@ Older entries archived in [`sessions/`](sessions/) — 2026-07-15 through
 
 ---
 
+## 2026-08-14 (Phase 2 trains — finetune.py hand-written, first real run launched)
+
+The Phase 2 stubs got filled in — by Betty, per the working mode set on
+2026-08-12 — and the first real 100k-triple run went out overnight in her own
+terminal. **No NFCorpus number exists yet, deliberately.** Commit `8a64055`,
+pushed to `origin/main`; it is the only code commit of the session.
+
+**The config, and why each knob is what it is.** `r=16, alpha=32, dropout=0.1,
+target_modules=["query", "value"], bias="none"` → **147,456 trainable params,
+0.65% of 22,713,216**. The count was predicted from `r x (d_in + d_out)` per
+targeted Linear *before* running, and matched the model exactly — the same move
+`arithmetic_ceiling()` makes in `oracle.py`, deriving the answer independently
+of the thing under test so agreement means something.
+
+`key` was dropped from `target_modules` after discussion: attention scores
+depend on the product `q·k`, so adapting both gives two routes to the same
+rescaling for 50% more parameters (221,184 vs 147,456). Not a correctness call
+— it is an ablation axis, and `--tag q-k-v` against this one is a cheap row if
+Phase 2 has budget for it.
+
+The suffix trap in the scaffold's docstring turned out to *understate* itself:
+PEFT matches `target_modules` by name suffix, and this backbone has a fourth
+`dense` the docstring missed — `model.pooler.dense`, 147,840 params. It is dead
+weight here (the ST `Transformer` reads `last_hidden_state` and mean-pools it,
+so the sentence embedding never passes through the BERT pooler), which makes it
+the sharpest illustration of the trap: `["dense"]` would have attached adapters
+to a layer that **cannot affect the output**, and nothing would have raised.
+The parameterless `Pooling` module at index 1 is a different object entirely and
+has no weights to adapt at all.
+
+**The bug of the session, and the reason the smoke run couldn't catch it.**
+Recorded in full in `LEARNINGS.md` (2026-08-14) — dev slice taken from the
+unshuffled dataset while training came from a seed-42 shuffle, giving 20% dev
+contamination at n=100k but only ~1% at smoke scale. What belongs in the
+narrative is the sequencing: the smoke run had already passed twice before this
+surfaced, and it passed *correctly* — proving the path executes is the whole of
+what `--smoke` claims. The correction also produced a stronger property than
+was asked for, measured rather than assumed: every row in `msmarco-bm25/triplet`
+carries a unique query, so the split is query-disjoint and MNRL's
+false-negative failure mode (the loose thread from 2026-08-12) cannot occur on
+this config.
+
+**How Phase 2 satisfies R1, concretely.** The plan said hyperparameters get
+selected on a held-out MS MARCO dev slice; that slice did not exist until
+today. `load_triples` now returns `(train, dev)` — first `n` and last `k` of the
+same shuffle, guarded by an explicit `n + k` check that raises rather than
+`assert`s (a bare `assert` is stripped under `python -O`, which is the wrong
+property for a guard against silent data leakage). `eval_strategy="steps"` plus
+`load_best_model_at_end` extends R1 one level further, making *which checkpoint*
+a dev-selected decision rather than "whatever step 3,125 happened to produce".
+
+A conceptual point worth keeping, since it shaped the plan: hyperparameters are
+**searched, not tuned**. Each config needs its own complete training run from a
+fresh adapter — weights from run A cannot be carried into run B without
+confounding "B is better" with "B trained twice as long" — and the winning run's
+checkpoint *is* the final model. There is no final retrain step. The classic-ML
+refit-on-train+dev habit was considered and rejected: it would reclaim ~10k of
+110k triples and ship a model no dev number was ever measured on.
+
+**Sizing, from measurement.** The smoke run reported **1.83 steps/sec** at batch
+32 on MPS (109.8s wall clock vs 109.3s of training — startup overhead is ~0.5s,
+so the extrapolation is trustworthy). That afforded ~105,344 triples in 30
+minutes; rounded to **100,000** because the triple count is a recorded
+hyperparameter and a round number is legible in a table where `105,344` invites
+"why?". 3,125 steps, ~31 min at the real run's observed ~1.65 it/s — slightly
+under smoke throughput, as expected when streaming 100k unique rows instead of
+recycling 2,000.
+
+**Three library behaviours checked against installed source rather than
+recalled**, each of which fails silently: `bias="lora_only"` unfreezing base-layer
+biases, `metric_for_best_model` inferring `greater_is_better` from the name, and
+`fp16` no longer being CUDA-only. All three are written up in `LEARNINGS.md`.
+The fp16 one is a straight correction of an assertion made earlier in this same
+session — `accelerate/accelerator.py:565` lists `mps` as supported for
+torch >= 2.5.0, so the scaffold's "fp16 is a CUDA thing" hint was stale. fp32
+stays, now for a stated reason (GradScaler skips overflow steps, muddying the
+steps/sec the smoke run exists to produce) rather than an inherited one.
+
+**Also fixed, all in the same file:** `max_steps` needed `-1` at the *argparse*
+layer, not a `-1` default on `train()` — a default only fires when the caller
+omits the argument, and `main()` was passing `None` explicitly. `main()` now
+calls `train()` by keyword, after a signature reorder came within one run of
+swapping `epochs` and `max_steps` positionally (200 epochs on 2,000 triples,
+capped at 1 step, no exception, wrong throughput number). And `--dropout` was
+wired through, having been accepted by `build_lora_model` but reachable only by
+editing the file.
+
+**A gap found while sweeping, which is tomorrow's first task.** `docs/plan.md`
+and the `finetune.py` module docstring both asserted that the existing
+entrypoints take `--model <checkpoint path>`. They do not: `evaluate.py:31`,
+`oracle.py:99` and `rerank.py:344` all hardcode `BI_ENCODER`, and none of the
+three exposes such a flag. The underlying plumbing *is* ready — `cache.py:22`
+already keys on `model_name`, and `load_encoder("models/smoke")` was verified to
+load a saved checkpoint correctly (22,860,672 params = backbone + adapter, 384-d
+output) — so this is CLI wiring, not design. The docstring has been corrected to
+say so.
+
 ## 2026-08-12 (Phase 2 designed, deps landed, finetune.py scaffolded for hand-writing)
 
 Phase 2 opens. Nothing trained yet and that is the point — the session went

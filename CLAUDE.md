@@ -18,6 +18,9 @@ python -m retrieval_lab.evaluate --dataset nfcorpus   # baseline metrics + headr
 python -m retrieval_lab.oracle   --dataset nfcorpus   # the ceiling a reranker could reach
 python -m retrieval_lab.rerank   --dataset nfcorpus   # Phase 1 cross-encoder rerank
 python -m retrieval_lab.rerank   --dataset nfcorpus --breakdown   # + the per-bucket analysis
+
+python -m retrieval_lab.finetune --smoke                          # Phase 2: throughput + path check
+python -m retrieval_lab.finetune --tag r16-a32-lr2e5-100k --triples 100000 --k 10000
 ```
 
 **Always run from the repo root.** `data/` (BEIR downloads) and `cache/`

@@ -5,9 +5,15 @@
 
 Trains the Phase 0 bi-encoder (`all-MiniLM-L6-v2`) contrastively on
 (query, positive, negative) triples with a LoRA adapter on the backbone, then
-saves the adapter to `models/lora-<tag>/`. Evaluation happens elsewhere: the
-existing entrypoints take `--model <that path>` and the retrieval cache keys off
-it, so two configs can never silently share results.
+saves the adapter to `models/lora-<tag>/`. Evaluation happens elsewhere.
+
+**That evaluation path is not wired up yet** (verified 2026-08-14):
+`cache.py:22` already keys on `model_name`, and `load_encoder(name)` loads a
+checkpoint directory correctly — `load_encoder("models/smoke")` returns
+22,860,672 params, i.e. backbone + adapter. But `evaluate.py`, `oracle.py` and
+`rerank.py` all hardcode `BI_ENCODER` at their `cached_retrieval` call and
+expose no `--model` flag. Adding it is what makes the checkpoint name flow into
+the cache key, so two configs cannot silently share retrieval results.
 
 See `docs/plan.md` "Phase 2 design" for the rules this file operates under. The
 one to keep in mind while editing: **no hyperparameter here may be chosen by
