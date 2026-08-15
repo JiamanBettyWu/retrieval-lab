@@ -252,6 +252,66 @@ def train(model, train_dataset: Dataset, eval_dataset: Dataset, out_dir: Path, l
     return output.metrics["train_steps_per_second"]
 
 # ---------------------------------------------------------------------------
+# YOURS — the missing baseline
+# ---------------------------------------------------------------------------
+@op
+def dev_loss(model, eval_dataset: Dataset, out_dir: Path,
+             batch_size: int = 32, seed: int = 42) -> float:
+    """MNRL loss for ANY model over the dev slice. Returns `eval_loss`.
+
+    Why this exists: the four Phase 2 configs produced dev losses of 0.3960,
+    0.3443, 0.3180 and 0.3129, and those numbers are only comparable **to each
+    other**. The base model's dev loss was never measured, so "the fine-tune
+    traded out-of-domain quality for in-domain gain" is currently unverified —
+    if the base model already scores below 0.3129, there was no gain to trade
+    and Phase 2 is damage in both directions. One number decides which.
+
+    **The trap: MNRL loss is a property of a BATCH, not of an example.** Every
+    triple's loss depends on the other `batch_size - 1` triples sharing its
+    batch, because those are its in-batch negatives. A loop that computes this
+    at a different batch size, or over a reshuffled dev set, returns a
+    well-formed number on a different scale — plausible, comparable-looking,
+    and wrong. Same failure family as a leaked `corpus_id`.
+
+    So do NOT hand-roll the eval loop. Rebuild the same trainer and let it do
+    the batching:
+
+        args = SentenceTransformerTrainingArguments(
+            output_dir=..., per_device_eval_batch_size=batch_size,
+            eval_strategy="no", report_to="none", seed=seed)
+        loss = MultipleNegativesRankingLoss(model)
+        trainer = SentenceTransformerTrainer(model=model, args=args,
+                                             eval_dataset=eval_dataset, loss=loss)
+        return trainer.evaluate()["eval_loss"]
+
+    Two things worth getting right:
+
+      - **`MultipleNegativesRankingLoss(model)` binds to the model you hand it.**
+        Reusing an instance built around a different model would score the wrong
+        weights while raising nothing.
+      - **`eval_strategy="no"`.** You are calling `evaluate()` directly rather
+        than training, so nothing should be scheduling evals of its own.
+
+    Note `per_device_EVAL_batch_size` here, against `per_device_TRAIN_batch_size`
+    in `train()` — and **the default is 8, not the train batch size.** Confirmed
+    against `checkpoint-3125/training_args.bin`: every Phase 2 run trained at 32
+    and evaluated at 8. So `0.3960 / 0.3443 / 0.3180 / 0.3129` were all measured
+    with **7 in-batch negatives, not 31**, and `batch_size=8` is what makes this
+    function's output comparable to them. Passing 32 here would produce a number
+    on a harder task and a different scale.
+
+    Two consequences worth carrying forward. The random-guess floor for those
+    dev losses is `ln(8) = 2.079`, not `ln(32) = 3.466` — the latter applies to
+    the *train* loss, which really did run at 32. And **the selector was weaker
+    than intended**: discriminating between 8 candidates is an easier task than
+    between 32, so the loss scale is compressed and configs sit closer together
+    than they would have. That is a plausible contributor to the `5e-4 -> 1e-3`
+    gap being only 0.0051 — the margin that decided the winner.
+    """
+    raise NotImplementedError("Betty writes this one.")
+
+
+# ---------------------------------------------------------------------------
 # MINE — plumbing. Read it, but you shouldn't need to change it.
 # ---------------------------------------------------------------------------
 def resolve_out_dir(tag: str, smoke: bool) -> Path:

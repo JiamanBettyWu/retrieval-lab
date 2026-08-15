@@ -454,3 +454,58 @@ time only. R2 is extended past NFCorpus for this — every number obtained on an
 dataset gets reported, win or lose. Without that rule, evaluating on new
 datasets until one flatters the fine-tune is exactly the search this repo exists
 to argue against.
+
+## 2026-08-14 (result) — the prediction was wrong, and the mechanism is breadth, not domain
+
+The FiQA prediction committed in `66e798c` was **refuted**. It said
+`msmarco-MiniLM-L6-cos-v5` would beat `all-MiniLM-L6-v2` on FiQA, because FiQA's
+natural-question queries resemble MS MARCO's where NFCorpus's biomedical terms do
+not. The control lost on FiQA by the **largest margin of the three datasets** —
+on the set chosen specifically because it should have reversed.
+
+| dataset | `all-MiniLM-L6-v2` | LoRA r16 lr1e-3 | `msmarco-MiniLM-L6-cos-v5` |
+|---|---|---|---|
+| NFCorpus | **0.3159** | 0.2725 (−13.7%) | 0.2584 (−18.2%) |
+| SciFact | **0.6451** | 0.5736 (−11.1%) | 0.4870 (−24.5%) |
+| FiQA | **0.3687** | 0.2784 (−24.5%) | 0.2317 (−37.2%) |
+
+Identical ordering on all three, no exceptions, no reversal — and the adapter
+sits between the two every time (75%, 45% and 66% of the way along). So the
+finding replicates, but the **domain-match explanation in the README is wrong**
+and needs replacing.
+
+What survives: `all-MiniLM-L6-v2`'s model card records training on
+**1,170,060,424 sentence pairs** across ~30 datasets; `msmarco-MiniLM-L6-cos-v5`
+trained on MS MARCO alone. The fine-tune took the 1.17B-pair model and pulled it
+toward a distribution defined by ~500k triples. **Narrowing the training
+distribution costs retrieval quality everywhere**, which is what three datasets
+with no exception actually show, and which the domain framing did not predict.
+It also explains the saturation across a 50x learning-rate range better: a
+147,456-parameter adapter can only pull so far however hard it is pushed, which
+strengthens the capacity-ceiling hypothesis (D8) rather than competing with it.
+
+**The half that is still unmeasured, and it decides the claim.** The four Phase 2
+dev losses are comparable only to each other; the base model's dev loss on the
+same slice was never computed. Until it is, "traded out-of-domain quality for
+in-domain gain" is unverified — if `all-MiniLM-L6-v2` already scores below
+0.3129 on that slice, there was no gain to trade and Phase 2 is loss in both
+directions. `dev_loss()` in `finetune.py` is scaffolded for exactly this.
+
+**Evals ran at batch size 8, not 32.** `per_device_eval_batch_size` does not
+inherit from `per_device_train_batch_size` — it defaults to 8, silently.
+Confirmed against `checkpoint-3125/training_args.bin`: every Phase 2 run trained
+at 32 and evaluated at 8. Three consequences. The base-model comparison must use
+8 or it lands on a different scale. The random-guess floor for those dev losses
+is `ln(8) = 2.079`, not `ln(32) = 3.466` — the latter applies to the train loss,
+which did run at 32. And **the selector was lower-resolution than intended**:
+ranking one document above 7 distractors is easier than above 31, so the loss
+scale is compressed and configs sit closer together than they otherwise would.
+That is a second independent reason to distrust the `0.0051` margin that picked
+1e-3 over 5e-4, alongside the absent noise floor.
+
+Also checked while in the args: warmup did run, despite
+`SentenceTransformerTrainingArguments` storing it as `warmup_ratio=None,
+warmup_steps=0.1`. `get_warmup_steps(3125)` returns 313 and the logged lr peaks
+at epoch 0.1024 (step 320) before decaying, so the claim that `checkpoint-200`
+sits inside the warmup ramp holds. Worth knowing that the stored attribute does
+not read back the way it was set.
