@@ -38,9 +38,14 @@ learning-to-rank (NDCG@k / MRR as the eval lens), LoRA / fine-tuning
 **Promoted from stretch 2026-08-14 — now Phase 4, the next real phase:**
 **LLM-evaluation** (grade the *generation* half for faithfulness/groundedness
 via LLM-as-judge, **with the judge itself validated against human labels and a
-κ published** — the measurement, not just the method) and **LangGraph**, placed
-at the one genuine branch in the pipeline (a refusal gate) rather than wrapped
-around a linear chain for its own sake.
+κ published** — the measurement, not just the method).
+
+> **Amended again 2026-08-14 (same day): LangGraph is out.** It was briefly
+> listed here, placed at the pipeline's one genuine branch. Dropped because the
+> skill is already demonstrated in other projects, so carrying a framework
+> dependency to re-demonstrate it buys nothing. The **branch itself survives as
+> a plain conditional** — what mattered was never the graph, it was the refusal
+> *rate* as a per-config metric. See D11 in the journal.
 
 ## Core design decisions (locked)
 
@@ -215,15 +220,28 @@ is the natural next chapter of the Phase 2 finding rather than a new topic.
   **Correctness is deliberately excluded**: NFCorpus qrels label *document
   relevance*, not answer correctness, so scoring it would mean inventing ground
   truth — the thing decision 2 exists to prevent.
-- **LangGraph, honestly placed.** `retrieve → rerank → generate` is linear, and
-  wrapping a linear pipeline in a graph framework to earn a résumé line is
-  resume-driven development. It earns its place at a **branch**: a **refusal
-  gate** — if the context does not support an answer, refuse rather than
-  hallucinate. That is a real conditional edge, and **refusal rate becomes a
-  measurable per-config quantity that feeds the headline question** (does worse
-  retrieval cause more refusals?). A judge-driven re-retrieval loop is the
-  second candidate and the only genuine *cycle*; build it only if the refusal
-  gate proves insufficient.
+- **The refusal gate — a measurement, not a framework.** If the retrieved
+  context does not support an answer, refuse rather than hallucinate, and
+  **report refusal rate per retrieval configuration**: does worse retrieval
+  cause more refusals? That feeds the headline question directly, and it is the
+  one place the generation half can register retrieval quality even if
+  faithfulness scores come out flat.
+
+  > **D11 resolved 2026-08-14 — C, skip LangGraph.** This bullet briefly
+  > justified a LangGraph dependency on the grounds that the gate is a genuine
+  > conditional edge, unlike the otherwise-linear `retrieve → rerank →
+  > generate`. That reasoning was sound and the conclusion is still no: the
+  > skill is demonstrated in other projects, so a framework carried here would
+  > be re-demonstrating it at the cost of a dependency. **The gate ships as a
+  > plain conditional.** Its value was always the refusal *rate*; the graph was
+  > only ever one way to spell the `if`. A judge-driven re-retrieval loop —
+  > the only genuine *cycle*, and the one thing that would actually have
+  > justified a graph library — stays out of scope unless the gate proves
+  > insufficient.
+  >
+  > **Still open:** whether the gate ships *at all*. If NFCorpus answers turn
+  > out trivially groundable it never fires and the metric is constant. Decide
+  > by reading ten generated answers, per the risks below.
 - **Scope:** ~100 NFCorpus queries (sampled once, seeded, fixed), 4 retrieval
   configs + the oracle-context ceiling, so ~500 generations and ~600 judge
   calls. Cheap on a small fast model. **The ~50 hand labels are the real cost
@@ -497,9 +515,10 @@ here that cannot be regenerated.
 - **Anthropic Claude** — the Phase 4 answer generator, and a *different* model
   as the Phase 4 judge (cross-model, to dodge self-bias — with the gap measured
   on a sample rather than assumed).
-- **`langgraph`** — Phase 4 only, and only for the refusal gate's conditional
-  edge. If the pipeline stays linear, it does not get used; see the Phase 4
-  milestone on why that restraint is deliberate.
+- ~~**`langgraph`** — Phase 4 only, for the refusal gate's conditional edge.~~
+  **Dropped 2026-08-14 (D11-C).** The skill is demonstrated in other projects;
+  the refusal gate ships as a plain conditional instead. No orchestration
+  framework in this repo — the pipeline is a function chain and stays one.
 - Vector search: brute-force in-memory cosine is fine at BEIR-small scale; add
   FAISS only if a corpus grows.
 
@@ -534,10 +553,11 @@ here that cannot be regenerated.
 - **How many hand labels?** ~50 is the sketch. Fewer makes κ's confidence
   interval too wide to publish honestly; more costs an evening. Decide by
   labelling 20 first and looking at how often the judge and the label disagree.
-- **Does the refusal gate ship?** It is what makes LangGraph honest here, but it
-  is also a behaviour change to the pipeline. If NFCorpus answers turn out
-  trivially groundable, the gate never fires and the branch is decorative —
-  check by reading ten answers before building it.
+- **Does the refusal gate ship?** No longer a framework question (D11 resolved
+  to skip LangGraph — it is a plain conditional now), but still a behaviour
+  change and still worth the check: if NFCorpus answers turn out trivially
+  groundable the gate never fires and refusal rate is a constant column. Read
+  ten generated answers before building it.
 
 ## Learning resources to line up
 

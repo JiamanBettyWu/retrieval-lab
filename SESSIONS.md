@@ -96,6 +96,33 @@ added to the planned layout with **hand labels committed rather than gitignored*
 explicitly excluded from scope, since NFCorpus qrels label document relevance and
 inventing ground truth is what design decision 2 exists to prevent.
 
+**Two decisions resolved at the end of the session.** **D8 -> B**: no Phase 2.5
+capacity ablation; Phase 2 stays closed. The capacity-ceiling explanation for the
+saturation floor remains an inference and the README says so, which is the honest
+state — measuring it would deepen a mechanism rather than move the project, and
+Phase 4 is what closes the GenAI gap. **D9 follows it to B**: with no further
+close calls coming, a noise floor would inform nothing.
+
+**D11 -> C: LangGraph is out entirely.** The reasoning that put it in was sound
+— `retrieve -> rerank -> generate` is linear, so the framework needed a genuine
+branch to justify it, and the refusal gate is one. The conclusion is still no,
+for a reason the sketch had not accounted for: **the skill is already
+demonstrated in other projects**, so carrying a dependency here would
+re-demonstrate it at a cost. The distinction worth keeping is that **skipping the
+framework did not mean skipping the branch** — the gate's value was always the
+refusal *rate* as a per-config metric feeding the headline question, and a plain
+conditional spells that `if` just as well. What actually leaves scope is the
+judge-driven re-retrieval *loop*, the only genuine cycle and the one thing that
+would have justified a graph library. `docs/plan.md` records both as dated
+amendments rather than deletions, so the tech stack now reads "no orchestration
+framework in this repo — the pipeline is a function chain and stays one".
+
+Still open for Phase 4 and unchanged by either: whether the gate ships at all,
+which is a question about NFCorpus rather than about architecture. If its answers
+are trivially groundable the gate never fires and refusal rate is a constant
+column. Ten hand-read answers settle it, which is why Phase 4 starts with reading
+rather than coding.
+
 ## 2026-08-14 (Phase 2 lands — the fine-tune loses, and a control turns that into a finding)
 
 Phase 2 completed end to end and **the fine-tune lost**: NFCorpus NDCG@10

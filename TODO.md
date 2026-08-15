@@ -10,8 +10,10 @@ FiQA) with identical ordering, a prediction committed *before* the run
 (`66e798c`) was refuted, and the mechanism is now **training-distribution
 breadth**, not domain gap. **Phase 3 is retired** — its deliverable was the
 retriever Phase 2 measured to be worse — and **Phase 4 (generation +
-LLM-as-judge + LangGraph) is the next phase**, amended into `docs/plan.md`
-(`b52c50e`). One thing is scaffolded and unwritten: `dev_loss()`. Detail in
+LLM-as-judge) is the next phase**, amended into `docs/plan.md`. **D8 resolved B**
+(no capacity ablation; Phase 2 stays closed) and **D11 resolved C** (no
+LangGraph — the skill is covered elsewhere; the refusal gate ships as a plain
+conditional). One thing is scaffolded and unwritten: `dev_loss()`. Detail in
 [SESSIONS.md](SESSIONS.md); findings in `LEARNINGS.md` (2026-08-14).
 
 ```bash
@@ -37,19 +39,6 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
   return to retrieval** — Phase 4 is the direction and this is Phase 1 cleanup.
 - **Blocked on:** nothing; needs no training.
 
-### D8: Is there a Phase 2.5 capacity ablation, or does Phase 2 stay closed?
-- **Context:** all four learning rates converged to ~0.272 while the axis runs
-  to the control's 0.258. Leading explanation is the **capacity ceiling** of
-  147,456 params on `query`+`value` — an inference, not a measurement.
-- **Options:** A) **Run r=64 and/or add `key`** — ~60 min + 1 look per dataset
-  B) **Stay closed**, do Phase 4 C) **Test the fix** — fewer steps, or
-  mixed-domain replay
-- **Recommendation:** **B**, more firmly than last session — Phase 4 closes the
-  GenAI gap; this only deepens a mechanism the write-up already flags as an
-  inference. C is a new experiment, not an ablation.
-- **Blocked on:** Betty. **If A:** new `--tag` per config, select on dev loss
-  only (R1), report every number (R2), settle D9 first.
-
 ### D9: Does the ablation table get error bars?
 - **Context:** no config was ever run twice — every number is n=1 with no
   run-to-run variance estimate. The `5e-4 -> 1e-3` gap of `0.0051` that picked
@@ -58,10 +47,11 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
 - **Options:** A) **Seed replicates on 2–3 configs** (~60 min each)
   B) **State n=1 and move on** — already done, free C) **Replicate the winner
   only** — cheapest real answer
-- **Recommendation:** B if Phase 2 stays closed (D8-B); C only if D8-A happens
-  and more close calls follow.
-- **Blocked on:** Betty; interacts with D8. **If A/C:** `--tag <config>-seed<N>`;
-  the spread goes in the table, not prose.
+- **Recommendation:** **B.** D8 resolved to keep Phase 2 closed, so no further
+  close calls are coming and a noise floor would inform nothing. Revisit only if
+  Phase 2 reopens.
+- **Blocked on:** Betty. **If A/C:** `--tag <config>-seed<N>`; the spread goes in
+  the table, not prose.
 
 ### D10: Which generator, and which judge? (Phase 4, blocking)
 - **Context:** they must differ, to dodge self-bias. The judge must pass the 4b
@@ -73,18 +63,6 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
 - **Blocked on:** Betty; needed before any Phase 4 code. **If A:** both model IDs
   go in the generation cache key alongside `prompt_version` — swapping either
   silently invalidates results.
-
-### D11: Does the refusal gate ship — i.e. does LangGraph earn its place?
-- **Context:** `retrieve → rerank → generate` is linear; LangGraph is justified
-  only by a real branch. The refusal gate is one, and its refusal rate is a
-  per-config metric feeding the headline question. **But if NFCorpus answers are
-  trivially groundable the gate never fires and the branch is decorative.**
-- **Options:** A) **Read 10 generated answers first**, then decide B) **Commit
-  to the gate now** C) **Skip LangGraph** — plain functions, noted in the plan
-- **Recommendation:** A — cheapest possible check, and it gates a framework
-  dependency.
-- **Blocked on:** nothing; this is step 1 of Phase 4. **If C:** the LangGraph
-  line leaves the plan's tech stack; the phase is otherwise unchanged.
 
 ## Needs attention
 
@@ -117,5 +95,6 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
 2. **Update `README.md`** with the three-dataset table, the refuted prediction,
    and the breadth mechanism. Do it after step 1 so both corrections land once.
 3. **Start Phase 4 by reading, not coding:** generate ~10 NFCorpus answers by
-   hand and read them. That answers D11, and tells you whether biomedical
-   abstracts make faithfulness trivial before you spend 500 generations.
+   hand and read them. Tells you whether biomedical abstracts make faithfulness
+   trivial — and whether the refusal gate would ever fire — before you spend 500
+   generations building around either assumption.
