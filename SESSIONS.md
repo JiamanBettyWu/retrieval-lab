@@ -10,6 +10,92 @@ Older entries archived in [`sessions/`](sessions/) — 2026-07-15 through
 
 ---
 
+## 2026-08-14 (later — three datasets, a refuted prediction, and Phase 3 retired)
+
+Continues the entry below, which closed at the first handoff (`aa0935b`). What
+follows started from a question rather than a task: **the Phase 2 results were
+unflattering, so was Phase 3 still worth doing, or was the write-up enough?**
+The answer turned out to be neither.
+
+**Replication, and a prediction committed before the run.** The Phase 2 finding
+was n=1 dataset, and it had a competitor it could not rule out — NFCorpus is a
+known weak spot for MS MARCO-trained models, so the "specialisation axis" might
+belong to the dataset rather than to specialisation. The discriminating test
+needed a BEIR set whose *query distribution* resembles MS MARCO's. FiQA fits;
+SciFact was added as a cheap second point. **The prediction and its falsifier
+were written into `LEARNINGS.md` and committed as `66e798c` before either ran**,
+so neither could be adjusted afterwards — and R2 was explicitly extended past
+NFCorpus, because evaluating on new datasets until one flatters the fine-tune is
+exactly the search this repo argues against.
+
+SciFact reproduced the ordering. **FiQA refuted the prediction** (`5575509`): the
+control lost there by the largest margin of the three, on the dataset chosen
+because it should have reversed. Numbers and the replacement mechanism are in
+`LEARNINGS.md` 2026-08-14 ("the prediction was wrong, and the mechanism is
+breadth, not domain"). The short version is that `all-MiniLM-L6-v2`'s card
+records 1,170,060,424 training pairs against the control's MS MARCO alone, so
+this is the cost of **narrowing a training distribution**, not of crossing a
+domain boundary — which also explains the saturation across a 50x lr range
+better than the domain story did, and strengthens D8 rather than competing
+with it.
+
+**Two measurement facts fell out of writing a docstring.** `dev_loss()` was
+scaffolded (left `NotImplementedError` per the working split) for the half of
+the Phase 2 claim that is still unverified: the base model's dev loss was never
+measured, so "traded out-of-domain quality for in-domain gain" rests on nothing
+— if the base model already scores below 0.3129 there was no gain to trade.
+Writing its docstring surfaced that **`per_device_eval_batch_size` defaults to 8
+and does not inherit from the train batch size**, confirmed against
+`training_args.bin`. Every Phase 2 dev loss was therefore measured with 7
+in-batch negatives rather than 31 — so the comparison must use 8, the
+random-guess floor is `ln(8) = 2.079` rather than `ln(32)`, and the selector was
+lower-resolution than intended, which is a second independent reason to distrust
+the `0.0051` margin that picked 1e-3 over 5e-4. Also checked and recorded: warmup
+did run, despite the args object reading back as `warmup_ratio=None,
+warmup_steps=0.1`.
+
+**Phase 3 retired, Phase 4 promoted (`b52c50e`) — the real decision of the
+session.** Reading `docs/plan.md` to answer the Gradio question surfaced that
+**Phase 3's stated deliverable was already dead**: "a MS-MARCO-trained retriever
+answering over a personal domain" is the model Phase 2 measured to be the worse
+one, so building it would mean demoing what the evidence says not to ship. Its
+deliverable died with locked design decision 3, not with the UI — and decision 3
+itself was measured and refuted, so it now carries an amendment note rather than
+a rewrite, per the repo convention that reversals say so explicitly.
+
+The counter-argument to simply stopping was that **the repo contained no LLM at
+all.** Every phase to date is retrieval, which is a classic-IR discipline, and
+the stated career goal is a classic-ML→GenAI pivot; `[generate]` first appeared
+in the retired phase. So Phase 4 moved from a one-line stretch goal to the next
+real phase, keeping the existing discipline rather than bolting on a demo: it
+asks **whether answer quality tracks NDCG@10** across the four retrieval
+configurations Phases 1-2 already left cached, measures a **qrel-perfect-context
+ceiling before building anything** (the `oracle.py` move one level up), and
+**validates the judge before trusting it** — a grounded/ungrounded fixture, ~50
+human labels, and a published Cohen's κ. The likely finding is "barely tracks",
+which is the interesting outcome given Phase 1's cross-encoder already absorbed
+99% of Phase 2's regression.
+
+LangGraph was placed deliberately rather than shoehorned: `retrieve → rerank →
+generate` is linear, and wrapping a linear pipeline in a graph framework for a
+résumé line is resume-driven development. It earns its place at a **refusal
+gate** — a real conditional edge whose refusal rate is itself a per-config
+metric feeding the headline question. **The plan says outright that if the
+pipeline stays linear, LangGraph does not get used**, which makes the first
+Phase 4 action "generate ten answers and read them" rather than "write code".
+
+**D6 dissolved and D2 left the file.** D6 asked whether the demo is hosted and
+over what corpus; with no wiki demo there is no private-corpus exposure to
+decide, and Phase 4 runs over public NFCorpus. D2 (which UI framework) is
+answered in the plan for the hypothetical future case — a thin Gradio front door
+over the best-*measured* config, Phase 1, not the fine-tuned one — so it is
+recorded there rather than carried as live state. Also settled in the amendment:
+the long-open eval-dataset question (all three used), `generate.py`/`judge.py`
+added to the planned layout with **hand labels committed rather than gitignored**
+(the one input here that cannot be regenerated), and answer *correctness*
+explicitly excluded from scope, since NFCorpus qrels label document relevance and
+inventing ground truth is what design decision 2 exists to prevent.
+
 ## 2026-08-14 (Phase 2 lands — the fine-tune loses, and a control turns that into a finding)
 
 Phase 2 completed end to end and **the fine-tune lost**: NFCorpus NDCG@10
