@@ -16,10 +16,16 @@ does the one thing most RAG projects skip: it **measures** whether the fancy
 parts (reranker, fine-tuned encoder) actually help. That measurement is the
 career story — *classic-ML rigor (ranking metrics, headroom, generalization)
 applied to a GenAI stack*, exactly the classic-ML→GenAI pivot. Portfolio-
-shareable: the benchmark half is public by construction, and no work data is
-involved anywhere. **How much of the Phase 3 wiki demo is shareable is still
-open** — the wiki is private, and a RAG demo answers by quoting its corpus, so
-"who may read the wiki" is the real question. See `TODO.md` D6.
+shareable: **everything is public by construction.**
+
+> **Amended 2026-08-14.** This paragraph used to end by flagging the private
+> wiki as an open sharing question (`TODO.md` D6). Phase 3 is retired and Phase
+> 4 runs over NFCorpus, so no private corpus is involved anywhere and D6
+> dissolves. The amendment also sharpens the pivot claim: as of Phase 2 the repo
+> contained **no LLM at all** — every phase was retrieval, which is classic IR
+> rather than GenAI. Phase 4 is what actually closes that gap, and it does so by
+> pointing the same measurement discipline at a target where almost nobody
+> measures: the LLM judge itself.
 
 ## Concepts exercised
 
@@ -29,8 +35,12 @@ learning-to-rank (NDCG@k / MRR as the eval lens), LoRA / fine-tuning
 (LoRA-fine-tune the encoder on MS MARCO triples), W&B Weave (tracing +
 `weave.Evaluation`), deliberate-practice (build-to-learn).
 
-**Stretch:** LLM-evaluation — Phase 4 grades the *generation* half
-(faithfulness/groundedness) via LLM-as-judge.
+**Promoted from stretch 2026-08-14 — now Phase 4, the next real phase:**
+**LLM-evaluation** (grade the *generation* half for faithfulness/groundedness
+via LLM-as-judge, **with the judge itself validated against human labels and a
+κ published** — the measurement, not just the method) and **LangGraph**, placed
+at the one genuine branch in the pipeline (a refusal gate) rather than wrapped
+around a linear chain for its own sake.
 
 ## Core design decisions (locked)
 
@@ -43,8 +53,28 @@ learning-to-rank (NDCG@k / MRR as the eval lens), LoRA / fine-tuning
 3. **Zero-shot generalization is the headline claim.** Fine-tune on MS MARCO
    (general), evaluate on an *unseen* BEIR domain. "A retriever that generalizes"
    beats "I improved my own test split."
+
+   > **Amended 2026-08-14 — decision 3 was measured and refuted.** Kept above as
+   > written rather than rewritten, because the reasoning that produced it is
+   > what the result argues against. Phase 2 fine-tuned on MS MARCO and the
+   > retriever generalized **worse**, on all three BEIR sets tried: NFCorpus
+   > `0.3159 -> 0.2725`, SciFact `0.6451 -> 0.5736`, FiQA `0.3687 -> 0.2784`.
+   > The off-the-shelf `msmarco-MiniLM-L6-cos-v5` control loses harder still on
+   > every one, so this is not a flaw in the recipe — narrowing a model trained
+   > on 1.17B diverse pairs down toward ~500k MS MARCO triples costs retrieval
+   > quality everywhere. A pre-registered prediction that FiQA would reverse the
+   > ordering (committed in `66e798c`, before the run) was also refuted. See
+   > `LEARNINGS.md` 2026-08-14 and the README's Phase 2 section.
+   >
+   > **The headline claim is now the measurement itself**: "a fine-tune that
+   > lost, proven not to be a bug, with its mechanism tested across three
+   > datasets" — which is what decision 4 was always really asking for.
+
 4. **Every phase ships a number and a working artifact.** The deliverable is a
-   growing ablation table with *movement* in it.
+   growing ablation table with *movement* in it. **Movement includes downward**
+   — Phase 2's row is a regression and it stays in the table, because a table
+   that only fills in when a phase wins cannot be trusted when it says a phase
+   won.
 
 ## Pipeline
 
@@ -58,8 +88,15 @@ query
 [cross-encoder rerank]  re-score top-100 jointly → top-10   ← Phase 1
   │
   ▼
-[generate]  Claude answers from top-k with citations        ← Phase 3 (wiki demo only)
+[generate]  Claude answers from top-k with citations        ← Phase 4 (was Phase 3)
+  │
+  ▼
+[judge]  a second model scores faithfulness + relevance      ← Phase 4
 ```
+
+**Amended 2026-08-14:** `[generate]` moved from "Phase 3, wiki demo only" to
+Phase 4, and is now an *evaluated* stage rather than a qualitative showcase. The
+`[judge]` stage is new. Reasoning in the amended milestones below.
 
 ### Models — the bi-encoder ≠ cross-encoder trap
 
@@ -105,17 +142,101 @@ like `BGE-small-en` also works — just less headroom.)
   below** (written 2026-08-12). It extends this milestone; nothing here is
   reversed.
 
-**Phase 3 — The wiki demo ("ask my second brain").**
-- Point the validated pipeline at the wiki's markdown (chunk pages, embed,
-  retrieve → rerank → Claude answers with page citations).
-- Thin UI: **Gradio/Streamlit** for speed (or a minimal FastAPI + page).
-- **Deliverable:** qualitative zero-shot showcase — a MS-MARCO-trained retriever
-  answering over a personal domain. The README front door.
+**Phase 3 — The wiki demo ("ask my second brain"). ~~Planned~~ RETIRED
+2026-08-14.** Kept here rather than deleted, since why it was dropped matters
+more than that it existed.
 
-**Phase 4 — Generation eval (stretch).**
-- Answer-quality scorers: retrieval-grounded faithfulness + relevance, via
-  **LLM-as-judge** (cross-model to dodge self-bias), calibrated against a small
-  hand-labeled set (report agreement). In `weave.Evaluation`.
+- ~~Point the validated pipeline at the wiki's markdown; thin Gradio/Streamlit
+  UI; qualitative zero-shot showcase — a MS-MARCO-trained retriever answering
+  over a personal domain. The README front door.~~
+- **Why it's retired:** its stated deliverable was *"a MS-MARCO-trained
+  retriever answering over a personal domain"* — and Phase 2 measured that
+  retriever to be the **worse** one on all three datasets tried. Building it
+  would mean demoing the model the evidence says not to ship. The deliverable
+  died with decision 3, not with the UI.
+- **What replaces it:** generation moves into Phase 4 as a *measured* stage
+  rather than a qualitative showcase. A Gradio front door remains optional
+  later, over the best-measured config (Phase 1) rather than the fine-tuned one.
+- **Knock-on:** **D6 dissolves** — it asked whether the demo is hosted and over
+  what corpus, and with no wiki demo there is no private-corpus exposure to
+  decide about. Phase 4 runs over NFCorpus, which is public and already cached.
+  **D2 is deferred**, not resolved: if a UI is ever built it is a thin front
+  door over Phase 1, and Gradio remains the recommendation.
+
+**Phase 4 — Generation + LLM-as-judge (promoted from stretch to the phase).**
+
+> Amended 2026-08-14. Was one line of "answer-quality scorers, stretch". It is
+> now the project's next real phase, because the repo currently contains no LLM
+> at all — every phase to date is retrieval, which is a classic-IR discipline.
+
+**The question:** every phase so far optimised **NDCG@10** on the assumption that
+it proxies answer quality. That assumption has never been tested, and this repo's
+posture is that untested assumptions get measured. Phase 1 and 2 left behind
+**four retrieval configurations with measured, spread-out quality and cached
+candidates for each** (LoRA `0.2725`, baseline `0.3159`, LoRA+rerank `0.3407`,
+baseline+rerank `0.3412`), which is an unusually clean setup for asking whether
+answer quality *tracks* the metric.
+
+The likely answer is "barely" — Phase 1's cross-encoder already absorbed 99% of
+Phase 2's retrieval regression, and a generator handed ten passages may absorb
+the rest. **That is the interesting outcome, not the disappointing one**, and it
+is the natural next chapter of the Phase 2 finding rather than a new topic.
+
+- **4a · generation, cached.** `generate.py`: top-10 → prompt → answer with
+  citations. Cached per `(dataset, retrieval_config, generator, prompt_version)`
+  — same reason `cache.py` exists, and more load-bearing here, since generation
+  is nondeterministic even at temperature 0. **`prompt_version` belongs in the
+  key**: editing a prompt invalidates results exactly as silently as editing
+  `retrieve.py` does.
+- **4b · the ceiling, before the thing.** The `oracle.py` move one level up:
+  generate from the **qrel-perfect context** (the actually-relevant docs, read
+  straight from the labels). That is the best this generator can do given
+  perfect retrieval, and every real config is read against it rather than
+  against 1.0. If oracle-context answers barely beat baseline-context answers,
+  **retrieval was never the bottleneck** — and the whole ablation table has been
+  optimising the wrong end of the pipeline. Uncomfortable, and worth knowing.
+- **4c · validate the judge before trusting it.** The part that makes this the
+  same project rather than a tutorial, in three checks:
+  1. **A known-answer fixture** — the analogue of the five-doc `NDCG@10 = 1.0`
+     test. Grounded condition (answer from qrel-relevant docs) vs ungrounded
+     (answer from randomly sampled irrelevant docs). **A judge that cannot
+     separate those is broken**, and this finds out in seconds rather than after
+     scoring 500 answers. Fixture first, full run second.
+  2. **Human calibration** — ~50 hand-labelled (context, answer) pairs, report
+     **Cohen's κ**. Raw accuracy lies under class imbalance: if 90% of answers
+     are faithful, a judge that always says "faithful" scores 90% and knows
+     nothing. Publishing κ is the point — *"we used LLM-as-judge"* is a method,
+     *"our judge agrees with human labels at κ = 0.71 on 50 examples"* is a
+     measurement.
+  3. **Cross-model judging** to dodge self-bias — and *measure* the gap on a
+     sample rather than assume it.
+- **Scored axes:** **faithfulness/groundedness** (every claim supported by the
+  retrieved passages — needs no external ground truth) and **answer relevance**.
+  **Correctness is deliberately excluded**: NFCorpus qrels label *document
+  relevance*, not answer correctness, so scoring it would mean inventing ground
+  truth — the thing decision 2 exists to prevent.
+- **LangGraph, honestly placed.** `retrieve → rerank → generate` is linear, and
+  wrapping a linear pipeline in a graph framework to earn a résumé line is
+  resume-driven development. It earns its place at a **branch**: a **refusal
+  gate** — if the context does not support an answer, refuse rather than
+  hallucinate. That is a real conditional edge, and **refusal rate becomes a
+  measurable per-config quantity that feeds the headline question** (does worse
+  retrieval cause more refusals?). A judge-driven re-retrieval loop is the
+  second candidate and the only genuine *cycle*; build it only if the refusal
+  gate proves insufficient.
+- **Scope:** ~100 NFCorpus queries (sampled once, seeded, fixed), 4 retrieval
+  configs + the oracle-context ceiling, so ~500 generations and ~600 judge
+  calls. Cheap on a small fast model. **The ~50 hand labels are the real cost
+  and the only part that cannot be automated — which is exactly why they are
+  what makes the result credible.**
+- **Known risks, recorded up front.** The judge may be too coarse to
+  discriminate (the ungrounded fixture catches this *before* the spend).
+  NFCorpus makes awkward RAG — biomedical abstracts, terse queries — so
+  **generate ten answers by hand and read them before building anything**. And
+  the finding may be "nothing tracks anything", which is still a result.
+- **Deliverable:** an answer-quality column beside the retrieval column in the
+  ablation table, a published judge-vs-human κ, and a stated answer to whether
+  NDCG@10 bought anything downstream.
 
 ## Phase 2 design — LoRA fine-tune the bi-encoder
 
@@ -353,8 +474,16 @@ the module count reached seven: `pyproject.toml` + an editable install makes
 imports unambiguous rather than fragile, which was the actual concern. Cost is
 one setup step and `python -m retrieval_lab.<entrypoint>` invocations.
 
-Planned additions as phases land: `rerank.py` (Phase 1), `finetune.py` (Phase 2),
-`app/` (Phase 3).
+Planned additions as phases land: ~~`rerank.py` (Phase 1), `finetune.py`
+(Phase 2), `app/` (Phase 3).~~ **Updated 2026-08-14** — `rerank.py` and
+`finetune.py` landed; `app/` is retired with Phase 3. Phase 4 adds
+`generate.py` (retrieve → prompt → cited answer, cached on
+`prompt_version` among the rest) and `judge.py` (the LLM-as-judge scorers *and*
+the κ calibration against hand labels — the calibration is not a notebook, for
+the same reason `rerank.py --breakdown` is not: every figure quoted in the
+README has to be printed by code someone else can re-run). Hand labels live in
+`data/labels/` and are **committed**, not gitignored — they are the one input
+here that cannot be regenerated.
 
 ## Tech stack
 
@@ -365,7 +494,12 @@ Planned additions as phases land: `rerank.py` (Phase 1), `finetune.py` (Phase 2)
 - **`peft`** — the LoRA adapter on the encoder backbone.
 - **`weave`** — tracing + `weave.Evaluation` (reuse the `observability.py` shim
   from the mise project).
-- **Anthropic Claude** — the Phase 3 answer generator.
+- **Anthropic Claude** — the Phase 4 answer generator, and a *different* model
+  as the Phase 4 judge (cross-model, to dodge self-bias — with the gap measured
+  on a sample rather than assumed).
+- **`langgraph`** — Phase 4 only, and only for the refusal gate's conditional
+  edge. If the pipeline stays linear, it does not get used; see the Phase 4
+  milestone on why that restraint is deliberate.
 - Vector search: brute-force in-memory cosine is fine at BEIR-small scale; add
   FAISS only if a corpus grows.
 
@@ -374,16 +508,36 @@ Planned additions as phases land: `rerank.py` (Phase 1), `finetune.py` (Phase 2)
 - No training from scratch; **LoRA only**, never full fine-tuning.
 - No full-scale MS MARCO *evaluation* — small BEIR set for eval, MS MARCO only
   as *training* data.
-- No production/multi-user app — this is a lab + demo.
-- No chunking-strategy rabbit hole in Phase 0–2 (BEIR docs are pre-chunked);
-  revisit only for the Phase 3 wiki demo.
+- No production/multi-user app — this is a lab. (**Amended 2026-08-14:** and no
+  longer a demo either; Phase 3 is retired.)
+- No chunking-strategy rabbit hole — BEIR docs are pre-chunked, and with the
+  wiki demo retired there is no unchunked corpus left in scope. **Amended
+  2026-08-14**, previously "revisit only for the Phase 3 wiki demo."
+- **Added 2026-08-14:** no answer-*correctness* scoring in Phase 4. NFCorpus
+  qrels label document relevance, not answer correctness; scoring it would mean
+  inventing ground truth, which is what decision 2 exists to prevent.
 
 ## Open decisions
 
-- **Eval dataset:** NFCorpus (harder, more qrels/query) vs SciFact (cleaner,
-  claim-style). Leaning **NFCorpus** to guarantee headroom.
-- **Demo UI:** Gradio/Streamlit (fast) vs FastAPI+React (a web rep). Leaning
-  **Gradio** — the science is the star.
+- ~~**Eval dataset:** NFCorpus vs SciFact.~~ **Settled 2026-08-14 — both, plus
+  FiQA.** NFCorpus was the primary throughout; SciFact and FiQA were added to
+  test whether the Phase 2 finding replicated. It did, on all three.
+- ~~**Demo UI:** Gradio vs FastAPI+React.~~ **Deferred 2026-08-14** with Phase 3
+  (`TODO.md` D2). If a UI is ever built it is a thin front door over the
+  best-*measured* config (Phase 1), and Gradio remains the recommendation.
+
+**Live for Phase 4:**
+
+- **Which judge model, and which generator?** They must differ (self-bias), and
+  the judge should be the stronger of the two — a judge that cannot tell
+  grounded from ungrounded fails the 4b fixture and blocks the phase.
+- **How many hand labels?** ~50 is the sketch. Fewer makes κ's confidence
+  interval too wide to publish honestly; more costs an evening. Decide by
+  labelling 20 first and looking at how often the judge and the label disagree.
+- **Does the refusal gate ship?** It is what makes LangGraph honest here, but it
+  is also a behaviour change to the pipeline. If NFCorpus answers turn out
+  trivially groundable, the gate never fires and the branch is decorative —
+  check by reading ten answers before building it.
 
 ## Learning resources to line up
 
