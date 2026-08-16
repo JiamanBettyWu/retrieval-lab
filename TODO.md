@@ -11,9 +11,9 @@ open in it.** The missing baseline was measured — `all-MiniLM-L6-v2` scores
 for in-domain gain" is **verified**. `README.md` has caught up in the same pass:
 three-dataset table, the refuted FiQA prediction kept as a refuted prediction,
 the breadth mechanism, and Phase 3's retirement. **Phase 4 (generation +
-LLM-as-judge) is next**; D10 has a tentative answer (qwen3:8b generator, Sonnet
-5 judge) so nothing blocks starting, but the judge must clear the 4b fixture
-before any generation counts. Detail in
+LLM-as-judge) is next**; D10 has a tentative answer (qwen3:8b generator,
+Sonnet 5 primary judge, Qwen3.8-27B second judge) so nothing blocks starting,
+but neither judge counts until it clears the 4b fixture. Detail in
 [SESSIONS.md](SESSIONS.md); findings in `LEARNINGS.md` (2026-08-16).
 
 ```bash
@@ -39,24 +39,35 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
   return to retrieval** — Phase 4 is the direction and this is Phase 1 cleanup.
 - **Blocked on:** nothing; needs no training.
 
-### D10: Which generator, and which judge? (Phase 4) — **tentatively A**
+### D10: Which generator, and which judge? (Phase 4) — **tentatively A + C**
 - **Context:** they must differ, to dodge self-bias. The judge must pass the 4b
   grounded/ungrounded fixture or the phase cannot proceed.
 - **Options:** A) **Small-fast generator, stronger judge** — the judge is the
   measuring instrument B) **Same tier both** — cheaper, risks a judge too coarse
   C) **Two judges**, report their agreement alongside human κ
-- **Tentative pick (2026-08-16, Betty): A** — generator `qwen3:8b` (local, via
-  Ollama), judge **Claude Sonnet 5** (`claude-sonnet-5`). Different families, so
-  self-bias is structurally ruled out rather than argued away. **Marked
-  tentative**: not yet validated against the 4b fixture, and the judge choice is
-  revisitable if it proves too coarse or too costly on 500 generations.
-- **Blocked on:** nothing to start — but the fixture is the gate. If Sonnet 5
-  fails the grounded/ungrounded fixture, the judge changes and any generations
-  already scored are void.
-- **Carries with it:** both model IDs go in the generation cache key alongside
-  `prompt_version` — swapping either silently invalidates results, and a
-  *tentative* choice is exactly the case where that will happen. Wire the key
-  before the first generation, not after.
+- **Tentative pick (2026-08-16, Betty): A + C.** Generator `qwen3:8b` (local,
+  via Ollama). **Primary judge Claude Sonnet 5** (`claude-sonnet-5`), **second
+  judge `Qwen3.8-27B`** (open weights, local) on a sample.
+- **Why two rather than the open-weight judge alone:** `Qwen3.8-27B` judging
+  `qwen3:8b` output is the *same family* scoring itself — shared pretraining
+  corpus and post-training recipe, so it carries exactly the self-bias D10
+  exists to dodge. A different parameter count does not buy the independence a
+  different family does. Sonnet 5 stays the measuring instrument; the
+  open-weight judge rides alongside, and **their agreement becomes a result** —
+  reported next to human κ, it also answers whether an open-weight judge could
+  stand alone in a later phase.
+- **Marked tentative:** neither judge has cleared the 4b grounded/ungrounded
+  fixture yet, and Sonnet 5 is revisitable if it proves too coarse or too costly
+  across 500 generations.
+- **Blocked on:** nothing to start — but the fixture is the gate. A judge that
+  fails it changes, and any generations already scored under it are void.
+- **Carries with it:** **all three** model IDs go in the generation cache key
+  alongside `prompt_version` — swapping any one silently invalidates results,
+  and a *tentative* choice is exactly the case where that will happen. Wire the
+  key before the first generation, not after.
+- **Unverified:** whether a dense 27B (~16–17GB resident at Q4) runs at a usable
+  rate on this machine. Check before committing the second judge to the full
+  sample — the fallback is to score fewer items with it, not to drop the κ.
 
 ## Needs attention
 
@@ -72,9 +83,9 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
    hand with `qwen3:8b` and read them. Tells you whether biomedical abstracts
    make faithfulness trivial — and whether the refusal gate would ever fire —
    before you spend 500 generations building around either assumption.
-2. **Run Sonnet 5 against the 4b grounded/ungrounded fixture** before it scores
-   anything real. D10 is tentative until it passes; a judge swapped after the
-   fact voids every generation already scored.
-3. **Wire the generation cache key** (both model IDs + `prompt_version`) before
+2. **Run both judges against the 4b grounded/ungrounded fixture** before either
+   scores anything real. D10 is tentative until they pass; a judge swapped after
+   the fact voids every generation already scored under it.
+3. **Wire the generation cache key** (all three model IDs + `prompt_version`) before
    the first cached generation — a tentative model choice is precisely the case
    where a silent stale-cache hit will bite.
