@@ -24,12 +24,14 @@ import logging
 import time
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformerTrainer, SentenceTransformerTrainingArguments
+from sentence_transformers.sentence_transformer.losses import MultipleNegativesRankingLoss
 from peft import LoraConfig
 
 from datasets import Dataset, load_dataset
 
 from .observability import init_weave, op
-from .retrieve import BI_ENCODER
+from .retrieve import BI_ENCODER, load_encoder
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("retrieval_lab")
@@ -43,6 +45,18 @@ MODELS_DIR = Path("models")
 SMOKE_TRIPLES = 2_000
 SMOKE_MAX_STEPS = 200
 SMOKE_N_EVAL = 100
+
+# What the four Phase 2 runs were measured under. These are not defaults for
+# taste — they are the conditions that make a new dev loss comparable to the
+# recorded ones, and every one of them is a way to get a plausible wrong number.
+#   k        : dev is the LAST k rows of the seed-42 shuffle, so k=5,000 is a
+#              different (smaller, non-identical) slice, not a cheaper sample.
+#   batch    : MNRL loss is a property of a batch — 8 gives 7 in-batch
+#              negatives, 32 gives 31, a strictly harder task on another scale.
+PHASE2_K = 10_000
+DEV_LOSS_BATCH_SIZE = 8
+# LEARNINGS.md 2026-08-14, r=16 alpha=32 100k triples; lr -> dev loss.
+PHASE2_DEV_LOSSES = {"2e-5": 0.3960, "1e-4": 0.3443, "5e-4": 0.3180, "1e-3": 0.3129}
 
 
 # ---------------------------------------------------------------------------
@@ -220,10 +234,6 @@ def train(model, train_dataset: Dataset, eval_dataset: Dataset, out_dir: Path, l
         path in a repo whose whole thesis is against those. Weave tracing here
         comes from the `@op` above, not from the trainer.
     """
-
-    from sentence_transformers import SentenceTransformerTrainer, SentenceTransformerTrainingArguments
-    from sentence_transformers.sentence_transformer.losses import MultipleNegativesRankingLoss
-
     
     args = SentenceTransformerTrainingArguments(
         output_dir=out_dir,
@@ -256,7 +266,7 @@ def train(model, train_dataset: Dataset, eval_dataset: Dataset, out_dir: Path, l
 # ---------------------------------------------------------------------------
 @op
 def dev_loss(model, eval_dataset: Dataset, out_dir: Path,
-             batch_size: int = 32, seed: int = 42) -> float:
+             batch_size: int = DEV_LOSS_BATCH_SIZE, seed: int = 42) -> float:
     """MNRL loss for ANY model over the dev slice. Returns `eval_loss`.
 
     Why this exists: the four Phase 2 configs produced dev losses of 0.3960,
@@ -308,7 +318,17 @@ def dev_loss(model, eval_dataset: Dataset, out_dir: Path,
     than they would have. That is a plausible contributor to the `5e-4 -> 1e-3`
     gap being only 0.0051 — the margin that decided the winner.
     """
-    raise NotImplementedError("Betty writes this one.")
+    args = SentenceTransformerTrainingArguments(
+        output_dir=out_dir,
+        report_to="none",
+        seed=seed,
+        per_device_eval_batch_size=batch_size,
+        eval_strategy="no",
+    )
+    loss = MultipleNegativesRankingLoss(model)
+    trainer = SentenceTransformerTrainer(model=model, args=args, eval_dataset=eval_dataset, loss=loss)
+
+    return trainer.evaluate()["eval_loss"]
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +344,64 @@ def resolve_out_dir(tag: str, smoke: bool) -> Path:
     decoration.
     """
     return MODELS_DIR / ("smoke" if smoke else f"lora-{tag}")
+
+
+def main_dev_loss(model_name: str, k: int, batch_size: int) -> None:
+    """Score one existing model on the dev slice. Measures; never trains.
+
+    Separate entrypoint rather than a step inside `main()` on purpose: this runs
+    against a model that already exists (the base encoder, or a finished
+    adapter), so building a fresh LoRA and a training set here would be both
+    wasted work and a way to accidentally report a number from the wrong weights.
+
+    `n` is not a parameter because it cannot matter: `load_triples` defines dev
+    as the last `k` rows of the seed-42 shuffle, so the slice is a function of
+    `k` and the seed alone. Passing 0 makes that independence explicit — if this
+    ever starts returning a different number for a different `n`, the split
+    definition has changed underneath the recorded table.
+    """
+    init_weave()
+
+    if k != PHASE2_K:
+        log.warning("--k %s: the recorded Phase 2 losses were measured on the last "
+                    "%s rows. A different k is a DIFFERENT dev slice, so the number "
+                    "below is not comparable to the table.", f"{k:,}", f"{PHASE2_K:,}")
+    if batch_size != DEV_LOSS_BATCH_SIZE:
+        log.warning("--eval-batch-size %d: the recorded Phase 2 losses were measured "
+                    "at %d (%d in-batch negatives). A different batch size puts the "
+                    "loss on a different scale, so the number below is not comparable "
+                    "to the table.", batch_size, DEV_LOSS_BATCH_SIZE, DEV_LOSS_BATCH_SIZE - 1)
+
+    log.info("Loading dev slice: last %s of %s [%s] (seed 42) ...",
+             f"{k:,}", TRIPLES_DATASET, TRIPLES_CONFIG)
+    _, eval_dataset = load_triples(0, k)
+
+    log.info("Loading %s ...", model_name)
+    # load_encoder, not SentenceTransformer directly: whatever evaluate.py scores
+    # on BEIR under --model is then exactly what got scored here.
+    model = load_encoder(model_name)
+
+    started = time.perf_counter()
+    loss = dev_loss(model, eval_dataset, MODELS_DIR / "dev-loss", batch_size=batch_size)
+    elapsed = time.perf_counter() - started
+
+    log.info("\n=== MS MARCO dev loss (%s) ===", model_name)
+    log.info("dev rows      : %s (batch %d -> %d in-batch negatives)",
+             f"{k:,}", batch_size, batch_size - 1)
+    log.info("wall clock    : %.1fs", elapsed)
+    log.info("eval_loss     : %.4f", loss)
+
+    if k == PHASE2_K and batch_size == DEV_LOSS_BATCH_SIZE:
+        log.info("\nagainst the recorded Phase 2 runs (r=16, alpha=32, 100k triples):")
+        for lr, recorded in PHASE2_DEV_LOSSES.items():
+            log.info("  lr %-5s %.4f  (%+.4f vs this)", lr, recorded, recorded - loss)
+        best_lr, best = min(PHASE2_DEV_LOSSES.items(), key=lambda kv: kv[1])
+        if loss < best:
+            log.warning("\nThis model scores BELOW the best fine-tune (%s, %.4f). If this "
+                        "is the base encoder, Phase 2 bought no in-domain gain and the "
+                        "'traded out-of-domain quality for in-domain gain' framing in "
+                        "README.md is wrong, not merely narrow.", best_lr, best)
+    log.info("\nRecord the number in LEARNINGS.md before it becomes a screenshot.")
 
 
 def main(tag: str, n_triples: int, k: int, smoke: bool, rank: int, alpha: int,
@@ -386,7 +464,19 @@ if __name__ == "__main__":
                         "a hyperparameter changes, or the retrieval cache serves the "
                         "previous config's results under the new config's name.")
     p.add_argument("--triples", type=int, default=50_000)
-    p.add_argument("--k", type=int, default=5_000)
+    p.add_argument("--k", type=int, default=None,
+                   help="dev rows = the LAST k of the seed-42 shuffle. Defaults to "
+                        "5,000 when training and to 10,000 under --dev-loss, which is "
+                        "the slice the recorded Phase 2 losses were measured on.")
+    p.add_argument("--dev-loss", nargs="?", const=BI_ENCODER, default=None, metavar="MODEL",
+                   help="measure an EXISTING model's dev loss and exit — no training. "
+                        "Bare --dev-loss scores the base encoder, which is the missing "
+                        "baseline the Phase 2 table's four numbers are read against; "
+                        "pass a path (models/lora-<tag>) to score an adapter instead.")
+    p.add_argument("--eval-batch-size", type=int, default=DEV_LOSS_BATCH_SIZE,
+                   help="--dev-loss only. Leave it: MNRL loss is a property of a batch, "
+                        "and 8 is what the recorded numbers were measured at. Change it "
+                        "to study the scale, never to produce a table row.")
     p.add_argument("--smoke", action="store_true",
                    help="tiny subset, few steps: prove the path runs and measure steps/sec")
     p.add_argument("--rank", type=int, default=16)
@@ -403,5 +493,10 @@ if __name__ == "__main__":
                         "value OVERRIDES --epochs, which is what --smoke relies on and "
                         "what a real run must never do by accident.")
     args = p.parse_args()
-    main(args.tag, args.triples, args.k, args.smoke, args.rank, args.alpha,
-         args.dropout, args.lr, args.batch_size, args.epochs, args.max_steps)
+    if args.dev_loss is not None:
+        main_dev_loss(args.dev_loss, args.k if args.k is not None else PHASE2_K,
+                      args.eval_batch_size)
+    else:
+        main(args.tag, args.triples, args.k if args.k is not None else 5_000, args.smoke,
+             args.rank, args.alpha, args.dropout, args.lr, args.batch_size,
+             args.epochs, args.max_steps)

@@ -509,3 +509,35 @@ warmup_steps=0.1`. `get_warmup_steps(3125)` returns 313 and the logged lr peaks
 at epoch 0.1024 (step 320) before decaying, so the claim that `checkpoint-200`
 sits inside the warmup ramp holds. Worth knowing that the stored attribute does
 not read back the way it was set.
+
+## 2026-08-16 — the base model's dev loss, and the trade survives
+
+`0.6597`. `all-MiniLM-L6-v2`, untouched, on the last 10,000 rows of the seed-42
+shuffle at eval batch 8 — the same slice and the same scale the four Phase 2
+configs were scored on. Against `0.3960 / 0.3443 / 0.3180 / 0.3129`, every
+fine-tune sits far below the model it started from, and the worst config still
+improves on the base by more than the spread across all four configs combined.
+
+So the claim that was unverified since 2026-08-14 is **verified**: Phase 2 really
+did buy in-domain gain, and "traded out-of-domain quality for in-domain gain" is
+the right shape of sentence. The alternative the measurement existed to rule out
+— base already below 0.3129, meaning loss in both directions — is dead by a
+margin too large to be a batching artifact.
+
+The number also **corroborates against a figure recorded before it existed**.
+The 2e-5 run's eval curve opened at `0.6263` at step 200 and fell monotonically
+to `0.3960`. Step 200 is 200 steps of training past the base model, and it sits
+just below `0.6597` — the ordering base > first-eval > final is exactly what a
+model improving from this starting point produces. A base loss that had come
+back at, say, 0.45 would have been well-formed, plausible, and inconsistent with
+a curve already on disk. Worth remembering as a pattern: the cheapest check on a
+new number is an old number nobody computed it from.
+
+The two ways to get this wrong are both about comparability rather than code,
+so they are now guards rather than prose. `k` and the eval batch size each get
+a loud warning when they deviate from `10,000` and `8`, because both produce a
+number that looks like a table row and is measured on a different task —
+a different `k` is a different slice, not a cheaper sample of the same one.
+`--dev-loss` takes `n` nowhere near the dev slice for the same reason: dev is
+defined as the last `k` of the shuffle, so it is a function of `k` and the seed
+alone, and `load_triples(0, k)` says so in code.

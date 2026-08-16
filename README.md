@@ -3,8 +3,15 @@
 A retrieval-quality lab: build a two-stage RAG retriever, LoRA-fine-tune its
 encoder, and **measure** every change against a labeled benchmark (BEIR) with
 metrics traced in Weave — including the changes that turn out to make things
-worse, which is what Phase 2 did. Then demo the validated pipeline as an "ask my
-second brain" front door over a personal wiki.
+worse, which is what Phase 2 did. Then put the validated retriever behind a
+generator and measure *that* the same way — grounded answers scored by an
+LLM-as-judge calibrated against hand labels.
+
+> **Amended 2026-08-14:** the wiki demo UI (originally Phase 3) is **retired**,
+> not deferred. Its deliverable was a front door onto the retriever Phase 2 had
+> just measured to be worse, and a demo is not a measurement. Generation was
+> promoted to Phase 4 and is the next real phase. See
+> [`docs/plan.md`](docs/plan.md).
 
 > Full plan: [`docs/plan.md`](docs/plan.md). Current state and open decisions:
 > [`TODO.md`](TODO.md).
@@ -122,6 +129,12 @@ number would have silently scored Phase 2 against a bound it never had.
 number obtained gets reported; a table that only fills in when a phase wins is a
 table you cannot trust when it says a phase won. What the loss turned out to
 mean is below.
+
+**This table is NFCorpus only. The Phase 2 loss is not.** It replicated on
+**SciFact** and **FiQA** with identical ordering — base > LoRA > fully-MS-MARCO,
+no exception on any of the three — which is what moved the explanation from
+"biomedical domain gap" to training-distribution breadth. The three-dataset
+table is in the Phase 2 section.
 
 ### Phase 1 result — +0.0253 NDCG@10, or **8.1% of the available headroom**
 
@@ -340,9 +353,15 @@ establishes that `0.6263` is genuinely the maximum.
 
 LoRA (r=16, α=32, `query`+`value`, 147,456 trainable params = 0.65% of the model)
 on 100k MS MARCO triples with `MultipleNegativesRankingLoss`, evaluated zero-shot
-on the untouched BEIR set. MS MARCO dev loss fell from 0.3960 to 0.3129 across the
-learning-rate search. NFCorpus NDCG@10 fell too — the wrong direction:
-`0.3159 -> 0.2725`, **−13.7% relative**.
+on the untouched BEIR set. **The fine-tune worked on its own objective**: MS MARCO
+dev loss fell from the base encoder's **0.6597** to **0.3129** for the best
+config, and every config beat the base by a wide margin (within the
+learning-rate search the spread is much smaller, `0.3960 -> 0.3129`). NFCorpus
+NDCG@10 went the other way: `0.3159 -> 0.2725`, **−13.7% relative**.
+
+That contrast is the phase's finding in one line — real in-domain gain, paid for
+out of domain. Reproduce the base number with
+`python -m retrieval_lab.finetune --dev-loss`.
 
 **Before interpreting a bad number, rule out a broken one.** `NDCG@10 = 0.0000`
 has a known cause in this repo; `0.2725` doesn't, so it needed its own checks.
@@ -364,13 +383,18 @@ document that never entered the top 100.
 
 | lr | MS MARCO dev loss | cosine to base | NFCorpus NDCG@10 |
 |---|---|---|---|
-| — (baseline) | — | 1.0000 | **0.3159** |
+| — (baseline) | 0.6597 | 1.0000 | **0.3159** |
 | 2e-5 | 0.3960 | 0.9757 | 0.2724 |
 | 1e-4 | 0.3443 | 0.9438 | 0.2737 |
 | 5e-4 | 0.3180 | 0.9473 | 0.2765 |
 | 1e-3 | 0.3129 | 0.9294 | 0.2725 |
 
-Dev loss spans 21%. NFCorpus spans 1.5%. The middle column is what makes that
+The baseline's dev loss is measured on the same slice at the same eval batch
+size (the last 10,000 rows of the seed-42 shuffle, batch 8); MNRL loss is a
+property of a batch, so a number taken at any other batch size is on a different
+scale and does not belong in this column.
+
+Across the four fine-tuned configs, dev loss spans 21%. NFCorpus spans 1.5%. The middle column is what makes that
 strange rather than merely negative: **embedding drift from the base model does
 grow with learning rate** — the four adapters are genuinely, progressively
 different — while the damage doesn't move. A quantity that stops responding to
@@ -406,11 +430,11 @@ general purpose ──────────── this fine-tune ────
        └───────────────── −0.0575 ─────────────────────────┘
 ```
 
-The three models order cleanly along one axis of specialisation, and the
-fine-tune paid **75%** of the full penalty. **Nothing was broken.** The encoder
-was moved toward MS MARCO, and this is what that move costs on biomedical text.
-Without the control, the same numbers equally support *"our recipe is wrong"* —
-a different claim, and the wrong one. It cost one evaluation.
+The three models order cleanly along one axis of specialisation, and on NFCorpus
+the fine-tune paid **75%** of the full penalty. **Nothing was broken.** The
+encoder was moved toward MS MARCO, and this is what that move costs. Without the
+control, the same numbers equally support *"our recipe is wrong"* — a different
+claim, and the wrong one. It cost one evaluation.
 
 It also relocates the floor: the four adapters converge at 0.272 but the axis
 runs to 0.258, so the saturation point is likely **the capacity ceiling of
@@ -420,6 +444,46 @@ rate — which predicts a larger `rank`, or adding `key`, would push closer to
 once (full fine-tune, different loss, different data recipe), so it is a
 reference point, not a one-variable comparison; it cannot attribute the 0.0141
 gap to LoRA.
+
+#### The mechanism, and the prediction that refuted the first one
+
+**The explanation above was originally "domain gap", and it was wrong.** Kept
+here rather than rewritten, because how it was falsified is the point.
+
+The recorded reading of the control was that MS MARCO specialisation costs you
+on *biomedical* text — NFCorpus's vocabulary is far from MS MARCO's web queries.
+That story makes a testable prediction, so it was **committed to git before the
+run** (`66e798c`): on **FiQA**, whose natural-language financial questions look
+much more like MS MARCO's, `msmarco-MiniLM-L6-cos-v5` should *beat*
+`all-MiniLM-L6-v2`.
+
+It lost — by the **largest margin of the three datasets**, on the set chosen
+specifically because it should have reversed.
+
+| dataset | `all-MiniLM-L6-v2` | LoRA r16 lr1e-3 | `msmarco-MiniLM-L6-cos-v5` |
+|---|---|---|---|
+| NFCorpus | **0.3159** | 0.2725 (−13.7%) | 0.2584 (−18.2%) |
+| SciFact | **0.6451** | 0.5736 (−11.1%) | 0.4870 (−24.5%) |
+| FiQA | **0.3687** | 0.2784 (−24.5%) | 0.2317 (−37.2%) |
+
+Identical ordering on all three, no exception, no reversal — and the adapter
+lands between the two every time (75%, 45% and 66% of the way along the axis).
+So the *finding* replicates and the *explanation* does not survive.
+
+**What replaces it: training-distribution breadth, not domain match.**
+`all-MiniLM-L6-v2`'s model card records training on **1,170,060,424 sentence
+pairs** across ~30 datasets; `msmarco-MiniLM-L6-cos-v5` trained on MS MARCO
+alone. The fine-tune took the 1.17B-pair model and pulled it toward a
+distribution defined by ~500k triples. **Narrowing the training distribution
+costs retrieval quality everywhere** — which is what three datasets with no
+exception show, and what the domain framing failed to predict. It also fits the
+saturation across a 50× learning-rate range better than the domain story did: a
+147,456-parameter adapter can only pull so far however hard it is pushed, so it
+*strengthens* the capacity-ceiling reading above rather than competing with it.
+
+The methodological point is worth more than the mechanism. A pre-registered
+prediction on a dataset picked to break the hypothesis turns "our explanation
+sounds right" into a result either way — and this one cost three evaluations.
 
 #### Where the damage lands, and what the reranker does about it
 
@@ -494,6 +558,8 @@ src/retrieval_lab/
 ├── evaluate.py       # entrypoint: load → retrieve → BEIR metrics → headroom check
 ├── oracle.py         # entrypoint: the perfect-rerank ceiling (Phase 1's upper bound)
 ├── rerank.py         # entrypoint: cross-encoder rerank of the cached candidates (Phase 1)
+├── finetune.py       # entrypoint: LoRA fine-tune on MS MARCO (Phase 2); --dev-loss scores
+│                     #   any existing model on the dev slice without training
 └── observability.py  # Weave init + @op shim (works with or without weave)
 tests/                # fixture suites, no download required
 docs/plan.md          # the full multi-phase design doc
