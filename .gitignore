@@ -1,7 +1,12 @@
 .venv/
 __pycache__/
 *.pyc
-data/
+# BEIR downloads — rebuildable. `data/*` rather than `data/`: git does not
+# descend into an excluded directory, so a `!` exception under `data/` would
+# never be consulted. Phase 4's hand labels are the one input that cannot be
+# regenerated, so they are re-included below.
+data/*
+!data/labels/
 cache/
 # Phase 2 LoRA adapters — rebuildable from the lockfile + recorded config
 models/
