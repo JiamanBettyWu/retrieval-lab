@@ -10,6 +10,115 @@ Older entries archived in [`sessions/`](sessions/) — 2026-07-15 through
 
 ---
 
+## 2026-08-16 (the base model's dev loss, and Phase 2 closes for real)
+
+One number was outstanding and it decided a sentence: `dev_loss()` had been
+scaffolded on 2026-08-14 with a docstring full of traps and no body. Betty wrote
+the body this session; the rest was plumbing, measurement, and propagating the
+answer into the docs. **The answer is `0.6597`** — `all-MiniLM-L6-v2`, untouched,
+on the last 10,000 rows of the seed-42 shuffle at eval batch 8. Every Phase 2
+config (`0.3960 / 0.3443 / 0.3180 / 0.3129`) sits far below it, so the fine-tune
+bought real in-domain gain and **"traded out-of-domain quality for in-domain
+gain" is verified**, not merely unfalsified. The scenario the measurement existed
+to rule out — base already below `0.3129`, meaning Phase 2 was loss in both
+directions — is dead by a margin no batching artifact could produce. Recorded in
+`LEARNINGS.md` (2026-08-16).
+
+**The review, and one claim of mine that was wrong.** Betty's implementation was
+correct as written — the trainer rebuild, `eval_strategy="no"`, the loss bound to
+the passed model. Verified by running it on synthetic data at two batch sizes
+(`0.1390` at 8, `0.4297` at 32), which demonstrates the docstring's central trap
+rather than restating it. I flagged three things; **one was wrong.** I claimed
+passing `models/lora-<tag>` as `out_dir` would drop trainer bookkeeping into a
+checkpoint directory. It doesn't — `output_dir` is only written during training,
+and a bare `evaluate()` creates an empty directory and nothing else. Checked by
+listing the directory after a run. Betty pushed back before I'd verified it, and
+she was right.
+
+**Two real findings from the review, both about comparability rather than code.**
+First, the `--k 5000` argparse default was **never used by any run behind a table
+number** — every Phase 2 run passed `--k 10000` explicitly (`README.md:68`,
+`LEARNINGS.md:250`), and `--smoke` overrides k to 100. `--dev-loss` would have
+been the first command to *accept* that default and silently measure half a
+slice. So `--k` now defaults per-path: 5,000 training, 10,000 under `--dev-loss`.
+Second, the function's `batch_size` default of 32 contradicted its own docstring's
+hard requirement of 8; flipped, and both constants are now named
+(`PHASE2_K`, `DEV_LOSS_BATCH_SIZE`).
+
+Both deviations now warn loudly at runtime, confirmed firing. Worth recording
+that **the two guards are not equally severe**, and the warning text treats them
+as if they were: a different eval batch size puts the loss on a genuinely
+different scale (7 in-batch negatives vs 31), while `k=5,000` is a strict subset
+of `k=10,000` with aligned batch boundaries — the same scale, a noisier sample of
+it. Betty's call was to leave the wording as is rather than split it; the milder
+guard slightly cries wolf, deliberately.
+
+**A corroboration worth the pattern, not just the number.** The 2e-5 run's eval
+curve opened at `0.6263` at step 200 and fell monotonically to `0.3960` (recorded
+2026-08-14, before `0.6597` existed). Step 200 is 200 steps past the base model,
+and it sits just below `0.6597` — base > first-eval > final is exactly the
+ordering an improving model produces. A base loss of, say, 0.45 would have been
+well-formed and plausible and inconsistent with a curve already on disk. The
+cheapest check on a new number is an old number nobody computed it from.
+
+**`README.md` caught up in one pass** (it was the highest-priority stale doc, and
+the point of doing it after the measurement was to land both corrections at
+once). The intro no longer promises the retired wiki demo and points at Phase 4,
+with a dated amendment note. The Phase 2 headline anchors to `0.6597 -> 0.3129`
+and keeps the `0.3960 -> 0.3129` learning-rate spread as a separate, smaller
+claim — they are different movements and the old sentence had only the second.
+The lr table's empty baseline cell is filled. `finetune.py` was missing from the
+layout tree entirely; added, with `--dev-loss`.
+
+The substantive rewrite is a new subsection, **"The mechanism, and the prediction
+that refuted the first one."** Rather than swapping "domain gap" for "breadth"
+silently — which the repo's convention forbids and which would have thrown away
+the best methodology exhibit in the project — it keeps the wrong explanation,
+shows the prediction committed to git *before* the run (`66e798c`), and shows
+FiQA refuting it by the largest margin of the three, on the dataset chosen
+because it should have reversed. The three-dataset table moved into the README
+verbatim from `LEARNINGS.md` (diffed byte-identical; the percentages and the
+75%/45%/66% axis positions were recomputed from the raw NDCG values rather than
+trusted). The main ablation table stays NFCorpus-only — the three-dataset data is
+NDCG@10 only and would have hollowed out two columns — and got a pointer line
+instead, which was the actually-missing dimension.
+
+**A framing distinction that came out of the discussion and is worth keeping.**
+"Specializing" and "narrowing" are not synonyms and they make opposite
+predictions. Specialization says the training distribution *moves*, so damage
+should shrink as a dataset gets closer to MS MARCO. Narrowing says it *shrinks*
+— 1.17B pairs across ~30 datasets down to ~500k triples — so quality drops
+everywhere outside the retained slice regardless of proximity. FiQA is the
+closest of the three to MS MARCO and was hit hardest (`−24.5%`), which is the
+opposite sign, not a weaker version. Also worth stating plainly because it is
+easy to garble: **LoRA did not narrow the model — the training data did.** LoRA
+is how the update was applied, and its actual role was to *limit* the damage,
+which is why the adapter lands between the base and the full MS MARCO model
+every time.
+
+Two things this still does not establish, both left unclaimed: why FiQA was worst
+(narrowing predicts damage everywhere, not that ordering), and breadth as a
+*proven* mechanism rather than the best-fitting one — no run ever varied breadth
+while holding data volume and steps fixed. **The clean experiment, if Phase 2
+ever reopens:** 500k triples sampled across the ~30 datasets vs 500k from MS
+MARCO alone, same steps, same adapter. That is a one-variable test, which neither
+the control nor the three-dataset sweep is. Not filed as a decision, because D8
+resolved Phase 2 closed and this session confirms it.
+
+**Phase 2 is closed.** Its last open thread is measured, the portfolio front door
+matches the findings, and the next phase is blocked on D10, not on anything here.
+
+**D9 (error bars on the ablation table) leaves TODO.md as moot rather than
+decided**, and the distinction matters if it ever comes back. Its recommendation
+was already B — state n=1 and move on, which `README.md` does — and the only
+reason to revisit was a future close call inside Phase 2. D8 closed Phase 2 and
+this session confirms it, so there is no close call coming and a noise floor
+would inform nothing. If Phase 2 reopens (the one-variable breadth experiment
+above is the likely trigger), D9 reopens with it, because a `0.0051` margin with
+no run-to-run variance estimate is still the weakest number in the table.
+
+---
+
 ## 2026-08-14 (later — three datasets, a refuted prediction, and Phase 3 retired)
 
 Continues the entry below, which closed at the first handoff (`aa0935b`). What
