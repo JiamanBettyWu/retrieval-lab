@@ -19,6 +19,9 @@ python -m retrieval_lab.oracle   --dataset nfcorpus   # the ceiling a reranker c
 python -m retrieval_lab.rerank   --dataset nfcorpus   # Phase 1 cross-encoder rerank
 python -m retrieval_lab.rerank   --dataset nfcorpus --breakdown   # + the per-bucket analysis
 
+python -m retrieval_lab.hotpot_pool                               # Phase 4: build hotpotqa-distractor-pool (~27MB, once)
+python -m retrieval_lab.generate --n-queries 50                   # Phase 4a: generate answers (needs `ollama serve`)
+
 python -m retrieval_lab.finetune --smoke                          # Phase 2: throughput + path check
 python -m retrieval_lab.finetune --tag r16-a32-lr2e5-100k --triples 100000 --k 10000
 ```

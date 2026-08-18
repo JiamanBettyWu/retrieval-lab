@@ -22,6 +22,17 @@ def load_beir(dataset: str = "nfcorpus", split: str = "test", out_dir: str = "da
     """
     out = Path(out_dir)
     out.mkdir(exist_ok=True)
-    data_path = util.download_and_unzip(BEIR_URL.format(name=dataset), str(out))
+
+    # A dataset already on disk is loaded as-is, never re-fetched. This is what
+    # lets locally-*built* datasets be first-class: `hotpotqa-distractor-pool`
+    # (Phase 4, see hotpot_pool.py) has no BEIR zip to download, and without
+    # this short-circuit beir's util would 404 chasing one. Real BEIR datasets
+    # hit the same path once downloaded, so nothing about them changes.
+    local = out / dataset
+    if (local / "corpus.jsonl").exists():
+        data_path = str(local)
+    else:
+        data_path = util.download_and_unzip(BEIR_URL.format(name=dataset), str(out))
+
     corpus, queries, qrels = GenericDataLoader(data_folder=data_path).load(split=split)
     return corpus, queries, qrels

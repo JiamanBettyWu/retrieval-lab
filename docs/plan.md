@@ -168,6 +168,23 @@ more than that it existed.
   **D2 is deferred**, not resolved: if a UI is ever built it is a thin front
   door over Phase 1, and Gradio remains the recommendation.
 
+  > **Amended 2026-08-17 — Phase 4 does *not* run over NFCorpus.** The sentence
+  > above picked NFCorpus by inheritance from Phases 0–2, before anyone had read
+  > a generated answer. A 20-question probe showed NFCorpus queries are not
+  > questions (`turnips`, `folic acid`, "To Snack or Not to Snack?" — they are
+  > NutritionFacts.org video titles), and that **67% of its queries have every
+  > gold doc at a single relevance grade** (95% of all labels are grade 1). With
+  > a median of 16 gold docs and no grade signal, "the top-k gold docs" is an
+  > arbitrary draw — so **milestone 4b's oracle context is ill-defined here**.
+  > Phase 4 evaluates on **`hotpotqa-distractor-pool`** instead: the HotpotQA
+  > dev distractor paragraphs pooled into a 66,581-doc corpus (deduped from
+  > 73,700 slots), 7,405 questions, exactly 2 gold docs each. It is **not BEIR
+  > HotpotQA** and its numbers are not comparable to published BEIR results —
+  > hence the distinct dataset id. Full reasoning in `TODO.md` D12.
+  > **The public-corpus point stands**: HotpotQA is Wikipedia, so D6 stays
+  > dissolved. **NFCorpus is unaffected as a *retrieval* benchmark** — Phases
+  > 0–2 are untouched; document relevance is exactly what its qrels label.
+
 **Phase 4 — Generation + LLM-as-judge (promoted from stretch to the phase).**
 
 > Amended 2026-08-14. Was one line of "answer-quality scorers, stretch". It is
@@ -535,6 +552,28 @@ here that cannot be regenerated.
 - **Added 2026-08-14:** no answer-*correctness* scoring in Phase 4. NFCorpus
   qrels label document relevance, not answer correctness; scoring it would mean
   inventing ground truth, which is what decision 2 exists to prevent.
+
+  > **Amended 2026-08-17 — correctness is back IN, because its exclusion was
+  > never about correctness.** Read the rule above: it bars correctness scoring
+  > *because NFCorpus ships no answer labels*, so scoring it would mean
+  > inventing ground truth. With Phase 4 moved to `hotpotqa-distractor-pool`
+  > (D12), the ground truth is **shipped with the dataset** — a gold short
+  > answer per question. Nothing is invented, so decision 2 is satisfied rather
+  > than bent, and correctness joins faithfulness and answer relevance as a
+  > scored axis.
+  >
+  > **This does not shrink 4c.2's ~50 hand labels.** Correctness and
+  > faithfulness are orthogonal: an answer can be right while citing passages it
+  > never used (the probe produced exactly this — a "fantasy" answer citing a
+  > claim absent from the cited passage). Gold answers grade the *answer*; the
+  > κ grades the *judge*, whose axis is groundedness, and no dataset ships a
+  > label for that. What the gold answers do buy is **stratified sampling**:
+  > draw the ~50 labels across correct and incorrect answers rather than at
+  > random, so the class imbalance 4c.2 warns about cannot hollow out κ.
+  >
+  > **Scoring wrinkle:** gold answers are short spans ("Nelson County") and the
+  > generator emits paragraphs. Naive exact-match scores 0 on everything — use
+  > normalized token-F1 over a short answer, prompted or extracted.
 
 ## Open decisions
 

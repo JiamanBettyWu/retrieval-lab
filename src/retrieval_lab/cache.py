@@ -47,3 +47,42 @@ def cached_retrieval(dataset: str, model_name: str, top_k: int, compute, refresh
     path.write_text(json.dumps(results))
     log.info("retrieval cached -> %s", path)
     return results
+
+
+def generation_cache_path(dataset: str, retriever: str, top_k: int, n_context: int,
+                          generator: str, prompt_version: str) -> Path:
+    """One file per thing that changes what the generator was asked.
+
+    Phase 4 needs a stricter key than retrieval does, for a reason retrieval
+    doesn't have: **generation is nondeterministic even at temperature 0**, so a
+    stale hit cannot be caught by "just re-run it and compare".
+
+    `prompt_version` is in the key because editing a prompt invalidates results
+    exactly as silently as editing `retrieve.py` does — and unlike `retrieve.py`
+    there is no `--refresh` habit built around it yet. Bump it on every prompt
+    edit; that is the entire contract.
+
+    The judge model IDs are deliberately NOT here — see `judgement_cache_path`.
+    """
+    slug = lambda s: s.replace("/", "__").replace(":", "-")
+    return (CACHE_DIR / f"gen__{dataset}__{slug(retriever)}__top{top_k}"
+                        f"__ctx{n_context}__{slug(generator)}__{prompt_version}.json")
+
+
+def judgement_cache_path(generation_key: str, judge: str, rubric_version: str) -> Path:
+    """Judgements key off the generations they scored, PLUS judge and rubric.
+
+    **This splits what `TODO.md` D10 recorded as one key** ("all three model IDs
+    go in the generation cache key alongside `prompt_version`"). D10's intent is
+    honoured — swapping a judge must never silently reuse scores produced by a
+    different judge — but folding judge IDs into the *generation* key would also
+    discard every generation whenever only a judge changed, and D10 explicitly
+    expects the judge to change (both are marked tentative until they clear the
+    4c.1 fixture). Generations are the expensive half; re-scoring them is cheap.
+
+    So: one generation cache, one judgement cache per judge, the second keyed on
+    the first. A swapped judge invalidates judgements only, which is exactly the
+    blast radius the decision was protecting against.
+    """
+    slug = lambda s: s.replace("/", "__").replace(":", "-")
+    return CACHE_DIR / f"judge__{generation_key}__{slug(judge)}__{rubric_version}.json"

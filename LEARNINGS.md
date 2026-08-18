@@ -541,3 +541,64 @@ a different `k` is a different slice, not a cheaper sample of the same one.
 `--dev-loss` takes `n` nowhere near the dev slice for the same reason: dev is
 defined as the last `k` of the shuffle, so it is a function of `k` and the seed
 alone, and `load_triples(0, k)` says so in code.
+
+## 2026-08-17 — read the data before picking the dataset, and check your own sampler
+
+Phase 4 was about to run on NFCorpus for no better reason than Phases 0–2 did.
+Twenty questions — five each from nfcorpus, fiqa, scifact, hotpotqa, generated
+by `qwen3:8b` from gold context and again from nothing — cost about ten minutes
+and moved the decision twice.
+
+**The disqualifying finding was one nobody had predicted.** NFCorpus queries are
+not questions. `turnips`. `folic acid`. "To Snack or Not to Snack?" They are
+NutritionFacts.org video titles, and "answer relevance" barely parses when the
+query is one noun. The pre-probe worry had been that biomedical abstracts are
+tedious to hand-annotate, which is true and beside the point.
+
+**The argument that felt strongest died on contact.** The case against HotpotQA
+was contamination: 2018 Wikipedia multi-hop, in every pretraining corpus, so the
+generator would answer from memory and flatten every retrieval configuration.
+It got **1 of 5 right with no context and 4 of 5 with it** — inventing a county,
+a genre, and, memorably, both Temple University as Jack Guttentag's employer and
+a "Benjamin Franklin Templeton" who donated it. An 8B model does not reliably
+memorise long-tail entity facts. The prediction was well-reasoned, cheap to test,
+and wrong; testing it cost less than defending it would have. It is also
+generator-specific and n=5, so it is recorded as re-runnable rather than settled.
+
+**The probe caught its own author, too.** For `folic acid` the gold context came
+back as three papers on depression and antioxidants, and the model correctly
+refused. That read as broken labelling. It was mostly a broken *sampler*: all 12
+gold docs sit at grade 1, so `sorted(key=-grade)[:3]` was an arbitrary draw from
+a 12-way tie, and it happened to skip the four papers that do discuss folate.
+The dataset is defensible — a NutritionFacts page on folate and mood cites the
+surrounding depression literature, and document-level relevance is what these
+qrels claim.
+
+What survives is sharper than the accusation. **95% of NFCorpus test labels are
+grade 1 (11,758 against 576), and 217 of 323 queries have every gold doc at a
+single grade.** With a median of 16 gold docs and no signal to rank them, "the
+top-k gold documents" is not a defined object — so milestone 4b's oracle context,
+the whole point of which is to be the ceiling, cannot be constructed here without
+an arbitrary choice. That is a structural reason, not an anecdote, and it is the
+one that went into the plan.
+
+**The corpus-size problem dissolved once the constraint was stated precisely.**
+Full-wiki HotpotQA is 5.2M documents — a 654MB download against NFCorpus's 2.4MB
+— which drags in a vector index the scope discipline explicitly defers. But the
+dev distractor split already pools ten paragraphs per question: 73,700 slots,
+**66,581 unique after deduping by title**, which is FiQA-sized. Every one of the
+7,405 questions keeps exactly 2 gold docs and not one gold title is missing from
+the pool. Brute-force cosine survives; the corpus is adversarial by construction
+because the distractors were TF-IDF-mined per question. It is a custom reduction,
+so it carries a distinct id — `hotpotqa-distractor-pool`, never `hotpotqa` — and
+its numbers are not comparable to published BEIR results.
+
+**A gold answer is not a faithfulness label.** The tempting inference from
+HotpotQA shipping answers is that the ~50 hand labels become unnecessary. They do
+not. Correctness asks whether the answer is right; faithfulness asks whether it
+came from the passages. The probe produced the cell where these diverge: an
+answer citing "[1]" for the claim that 7th Sea is fantasy-themed, which passage
+[1] never says. Correctness marks that wrong for the wrong reason and would have
+marked a lucky-guess fabrication right. What gold answers actually buy is
+stratification — drawing the 50 labels across correct and incorrect answers, so
+the class imbalance that makes κ meaningless cannot take hold.
