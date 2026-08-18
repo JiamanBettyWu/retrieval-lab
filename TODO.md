@@ -4,21 +4,22 @@ Forward-looking state. Session history lives in [SESSIONS.md](SESSIONS.md).
 
 ## Current state
 
-**As of 2026-08-16 (latest session):** **Phase 2 is closed, with nothing left
-open in it.** The missing baseline was measured — `all-MiniLM-L6-v2` scores
-**0.6597** MS MARCO dev loss against the fine-tunes' `0.3960 / 0.3443 / 0.3180 /
-0.3129`, so Phase 2 bought real in-domain gain and "traded out-of-domain quality
-for in-domain gain" is **verified**. `README.md` has caught up in the same pass:
-three-dataset table, the refuted FiQA prediction kept as a refuted prediction,
-the breadth mechanism, and Phase 3's retirement. **Phase 4 (generation +
-LLM-as-judge) is next**; D10 has a tentative answer (qwen3:8b generator,
-Sonnet 5 primary judge, Qwen3.8-27B second judge) so nothing blocks starting,
-but neither judge counts until it clears the 4b fixture. Detail in
-[SESSIONS.md](SESSIONS.md); findings in `LEARNINGS.md` (2026-08-16).
+**As of 2026-08-17 (latest session):** **Phase 4 has a dataset and a corpus.**
+D12 moved Phase 4 off NFCorpus — whose queries turned out not to be questions —
+onto **`hotpotqa-distractor-pool`**, a 66,581-doc corpus pooled from HotpotQA's
+dev distractor paragraphs and built by `src/retrieval_lab/hotpot_pool.py`.
+Correctness scoring is back in scope (HotpotQA ships gold short answers, so
+nothing is invented) but **does not replace the ~50 hand labels** — those
+calibrate the judge on *faithfulness*, which no dataset labels.
+`src/retrieval_lab/generate.py` is scaffolded with `build_prompt`,
+`parse_answer` and `should_refuse` left as stubs. 69 tests green; nothing has
+been generated yet, so no generation cache exists. Detail in
+[SESSIONS.md](SESSIONS.md); findings in `LEARNINGS.md` (2026-08-17).
 
 ```bash
-pytest                                                # 40 tests, ~8s, no download
-python -m retrieval_lab.finetune --dev-loss           # base model dev loss: 0.6597
+pytest                                                # 69 tests, ~8s, no download
+python -m retrieval_lab.hotpot_pool                   # build the Phase 4 corpus (once)
+python -m retrieval_lab.generate --n-queries 50       # Phase 4a — needs `ollama serve` + the stubs
 python -m retrieval_lab.evaluate --dataset nfcorpus   # baseline 0.3159 (Phase 1 rerank: 0.3412)
 ```
 
@@ -39,53 +40,81 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
   return to retrieval** — Phase 4 is the direction and this is Phase 1 cleanup.
 - **Blocked on:** nothing; needs no training.
 
-### D10: Which generator, and which judge? (Phase 4) — **tentatively A + C**
-- **Context:** they must differ, to dodge self-bias. The judge must pass the 4b
-  grounded/ungrounded fixture or the phase cannot proceed.
-- **Options:** A) **Small-fast generator, stronger judge** — the judge is the
-  measuring instrument B) **Same tier both** — cheaper, risks a judge too coarse
-  C) **Two judges**, report their agreement alongside human κ
-- **Tentative pick (2026-08-16, Betty): A + C.** Generator `qwen3:8b` (local,
-  via Ollama). **Primary judge Claude Sonnet 5** (`claude-sonnet-5`), **second
-  judge `Qwen3.8-27B`** (open weights, local) on a sample.
-- **Why two rather than the open-weight judge alone:** `Qwen3.8-27B` judging
-  `qwen3:8b` output is the *same family* scoring itself — shared pretraining
-  corpus and post-training recipe, so it carries exactly the self-bias D10
-  exists to dodge. A different parameter count does not buy the independence a
-  different family does. Sonnet 5 stays the measuring instrument; the
-  open-weight judge rides alongside, and **their agreement becomes a result** —
-  reported next to human κ, it also answers whether an open-weight judge could
-  stand alone in a later phase.
-- **Marked tentative:** neither judge has cleared the 4b grounded/ungrounded
-  fixture yet, and Sonnet 5 is revisitable if it proves too coarse or too costly
-  across 500 generations.
-- **Blocked on:** nothing to start — but the fixture is the gate. A judge that
-  fails it changes, and any generations already scored under it are void.
-- **Carries with it:** **all three** model IDs go in the generation cache key
-  alongside `prompt_version` — swapping any one silently invalidates results,
-  and a *tentative* choice is exactly the case where that will happen. Wire the
-  key before the first generation, not after.
-- **Unverified:** whether a dense 27B (~16–17GB resident at Q4) runs at a usable
-  rate on this machine. Check before committing the second judge to the full
-  sample — the fallback is to score fewer items with it, not to drop the κ.
+### D10: Which generator, and which judge? (Phase 4) — **generator settled, judges still tentative**
+- **Settled:** generator `qwen3:8b`, local via Ollama. Two judges, not one, so
+  their agreement becomes a result reported next to human κ.
+- **Still tentative:** **primary judge Claude Sonnet 5** (`claude-sonnet-5`) and
+  **second judge `Qwen3.8-27B`** (local). Neither has cleared the 4c.1
+  grounded/ungrounded fixture, which is the gate — a judge swapped after the
+  fact voids every generation already scored under it.
+- **Constraint that survives any swap:** the local judge must not be a qwen3
+  model. The generator is `qwen3:8b`, and a shared pretraining corpus and
+  post-training recipe is exactly the self-bias D10 exists to dodge; a different
+  parameter count does not buy the independence a different family does.
+- **Amended 2026-08-17 (cache key):** one key became two — generations key on
+  `(dataset, retriever, top_k, n_context, generator, prompt_version)`,
+  judgements on that plus `(judge, rubric_version)`. Folding judge IDs into the
+  generation key would discard every generation whenever only a judge changed,
+  and this decision *expects* the judges to change. Pinned by
+  `tests/test_generate.py::test_swapping_a_judge_does_not_invalidate_generations`.
+- **Blocked on:** the fixture existing (see D13 and "Pick up here").
+
+### D13: Does the local judge need to be 27B, or is a smaller/different model better suited?
+- **Context (raised 2026-08-17, Betty):** `Qwen3.8-27B` was picked for D10's
+  second-judge slot on "bigger is safer", never on a measurement. `TODO.md` has
+  carried "unverified whether a dense 27B (~16–17GB resident at Q4) runs at a
+  usable rate on this machine" since it was chosen.
+- **The principle to test:** judging is a *classification* task against a
+  rubric, not a generation task. Parameter count mostly buys world knowledge,
+  and the judge needs little — everything it rules on is supplied in the prompt.
+  What it needs is instruction-following and calibration, which smaller
+  instruct-tuned models may have plenty of.
+- **Options:** A) **Keep `Qwen3.8-27B`** — as recorded, but unmeasured and
+  possibly too slow to run on the full sample B) **Bake off 4–5 candidates
+  against the 4c.1 fixture** — the fixture is small, so testing five costs about
+  what testing one does C) **Drop the local judge**, run Sonnet 5 alone — cheapest,
+  but forfeits the open-weight-agreement result and the "could an open-weight
+  judge stand alone?" question a later phase wants answered.
+- **Recommendation:** B. It is the same discipline as the rest of the repo —
+  decide on the fixture's evidence, not on a spec sheet — and it costs an
+  evening at most.
+- **Blocked on:** the 4c.1 fixture, which does not exist yet. Judges cannot be
+  compared before there is something to compare them on.
+- **If B:** score each candidate on fixture separation *and* throughput on this
+  machine, then re-open D10's second-judge slot with numbers. **If C:** D10's
+  "two judges" half is withdrawn and the κ section loses its agreement column.
 
 ## Needs attention
 
-- ⚠️ **`tests/test_finetune.py` still does not exist** but is cited in
-  `load_triples`'s docstring — should pin train ∩ dev disjointness, the `n + k`
-  guard, and now the `--dev-loss` k/batch-size defaults.
+- ⚠️ **The 4c.1 fixture does not exist** (`data/labels/` is empty) and it gates
+  both D10 and D13 — no judge can be validated, and no generation scored under
+  an unvalidated judge counts. It is ground truth, so it is Betty's to author;
+  `scratchpad/probe.md` has seed material, including a genuine ungrounded case
+  (hotpot Q2 cites [1] for a claim [1] never makes).
+- ⚠️ **The contamination refutation is generator-specific and n=5.** If
+  `qwen3:8b` is ever swapped for a larger generator, re-run the no-context probe
+  before trusting `hotpotqa-distractor-pool` — a generator that answers from
+  memory flattens every per-config difference. Gold answers make this a script
+  run, not a reading session.
+- ⚠️ **`SESSIONS.md` is 530+ lines**, past the ~500 rotation threshold. Not
+  rotated tonight because that moves files; say the word and it archives to
+  `sessions/` with a fresh journal started.
+- ⚠️ **`README.md` has no Phase 4 row yet** and still describes the project as
+  three-dataset. Left alone deliberately — Phase 4 has produced no number, and
+  the ablation table is for landed results.
+- ⚠️ Carried forward: **`tests/test_finetune.py` still does not exist** but is
+  cited in `load_triples`'s docstring — should pin train ∩ dev disjointness, the
+  `n + k` guard, and the `--dev-loss` k/batch-size defaults.
 - ⚠️ Carried forward: the retrieval cache key does not cover `retrieve.py`'s
   contents (`--refresh` after editing); `data/`/`cache/` resolve against cwd.
 
 ## Pick up here
 
-1. **Start Phase 4 by reading, not coding:** generate ~10 NFCorpus answers by
-   hand with `qwen3:8b` and read them. Tells you whether biomedical abstracts
-   make faithfulness trivial — and whether the refusal gate would ever fire —
-   before you spend 500 generations building around either assumption.
-2. **Run both judges against the 4b grounded/ungrounded fixture** before either
-   scores anything real. D10 is tentative until they pass; a judge swapped after
-   the fact voids every generation already scored under it.
-3. **Wire the generation cache key** (all three model IDs + `prompt_version`) before
-   the first cached generation — a tentative model choice is precisely the case
-   where a silent stale-cache hit will bite.
+1. **Author the 4c.1 grounded/ungrounded fixture.** It gates D10 and D13, and
+   nothing downstream is trustworthy without it. Seed from `scratchpad/probe.md`.
+2. **Bake off local judge candidates against it** (D13) — fixture separation and
+   throughput on this machine, not spec sheets. Not a qwen3 model.
+3. **Fill `generate.py`'s three stubs** — `build_prompt` first, since the output
+   format it establishes is what `parse_answer`, token-F1 and the judge rubric
+   all have to agree with. First run spends minutes on a retrieval cache miss
+   (66K docs) before reaching the stubs; that is not a hang.

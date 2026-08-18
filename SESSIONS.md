@@ -10,6 +10,118 @@ Older entries archived in [`sessions/`](sessions/) — 2026-07-15 through
 
 ---
 
+## 2026-08-17 (Phase 4 changes datasets, and the corpus gets built)
+
+Phase 4 opened by reading rather than coding, which is the only reason it did
+not open on the wrong dataset. `TODO.md` said "generate ~10 NFCorpus answers by
+hand and read them"; the probe that came out of it
+(`scratchpad/probe_datasets.py`, throwaway) generated 20 answers — five each
+from nfcorpus, fiqa, scifact and hotpotqa, every one produced twice, once from
+gold context and once from an empty prompt. The second condition was the
+contamination probe. Ten minutes of local `qwen3:8b` moved the dataset decision
+twice and killed an argument the session had opened with. Findings recorded in
+`LEARNINGS.md` (2026-08-17); this is the narrative.
+
+**D12 — Phase 4 leaves NFCorpus for `hotpotqa-distractor-pool`.** The stated
+worry going in was annotation burden: nobody wants to hand-label 50 pairs of
+biomedical abstracts, and κ is only as good as the annotator. True, and beside
+the point. The probe showed NFCorpus *queries are not questions* — the sampled
+five were `turnips`, `folic acid`, "To Snack or Not to Snack?", which are
+NutritionFacts.org video titles. "Answer relevance", one of Phase 4's two scored
+axes, barely parses against a one-noun query. The structural version of the
+finding is what went into `docs/plan.md`: **95% of NFCorpus test labels are
+grade 1 (11,758 against 576) and 217 of 323 queries have every gold doc at a
+single grade**, so with a median of 16 gold docs there is no signal by which to
+choose "the top-k gold documents" — and milestone 4b's oracle context, whose
+entire job is to be *the* ceiling, cannot be constructed without an arbitrary
+draw. NFCorpus is untouched as a retrieval benchmark; document relevance is
+exactly what its qrels claim, and Phases 0–2 stand.
+
+**The argument against HotpotQA died on contact with the data.** Claude opened
+by arguing contamination was decisive — 2018 Wikipedia multi-hop sits in every
+pretraining corpus, so the generator would answer from memory, per-config
+differences would flatten, and the refusal gate would never fire. `qwen3:8b`
+scored **1/5 with no context and 4/5 with it**, inventing a county, a genre, and
+both Temple University as Jack Guttentag's employer and a "Benjamin Franklin
+Templeton" who endowed it. An 8B model does not reliably memorise long-tail
+entity facts. The refutation is generator-specific and n=5, so it is recorded as
+re-runnable rather than settled — and the gold answers make that re-run a script
+rather than a reading session. The flip side became the positive case for the
+dataset: a generator that fabricates confidently when unsupported gives
+faithfulness and the refusal gate something real to detect, and the 1/5 → 4/5
+gap is dynamic range, meaning 4b's "was retrieval ever the bottleneck?" can come
+back either way instead of being pre-answered.
+
+**The probe caught its own author.** For `folic acid` the gold context came back
+as three papers on depression and antioxidants and the model correctly refused,
+which read as broken labelling and was written up as such for one turn. It was
+mostly a broken *sampler*: all 12 gold docs sit at grade 1, so
+`sorted(key=-grade)[:3]` was an arbitrary draw from a 12-way tie that happened
+to skip the four papers that do discuss folate. Checking the accusation before
+recording it is what turned an anecdote into the grade-distribution finding
+above, which is the version that belongs in a design doc.
+
+**FiQA was the runner-up and is still the fallback** — free, downloaded, real
+questions, already in the ablation table. It loses on ground truth:
+personal-finance advice has no single right answer.
+
+**The 5.2M-document problem dissolved once the constraint was stated
+precisely.** Full-wiki HotpotQA is a 654MB zip against NFCorpus's 2.4MB, ~8GB of
+resident embeddings, and a vector index `docs/plan.md` explicitly defers. But
+the dev distractor split already pools ten paragraphs per question. Pooling all
+of them gives **73,700 slots → 66,581 unique docs after deduping by title**,
+FiQA-sized, so brute-force cosine survives and the scope discipline holds. It is
+a custom reduction, so it carries a distinct dataset id — `hotpotqa-distractor-pool`,
+never `hotpotqa` — and its numbers are not comparable to published BEIR results.
+Built by `src/retrieval_lab/hotpot_pool.py`; verified 7,405 questions, exactly 2
+gold docs each, 0 gold titles missing from the pool, and it round-trips through
+an unchanged `load_beir`. `data.py` gained a five-line short-circuit so a dataset
+already on disk is never re-fetched, which is what makes locally-*built* datasets
+first-class.
+
+**The correctness amendment.** `docs/plan.md` banned answer-correctness scoring,
+and the recorded reason was specifically that *NFCorpus ships no answer labels*,
+so scoring it would mean inventing ground truth. HotpotQA ships a gold short
+answer per question, so the rationale evaporates and correctness is back in —
+decision 2 satisfied rather than bent. The tempting over-read, raised and
+rejected in the same conversation, is that gold answers replace the ~50 hand
+labels. They do not: correctness asks whether the answer is right, faithfulness
+asks whether it came from the passages, and the probe produced the cell where
+those diverge — an answer citing "[1]" for the claim that 7th Sea is
+fantasy-themed, which passage [1] never says. What gold answers actually buy is
+**stratified sampling** of the 50 labels across correct and incorrect answers,
+which is a direct attack on the class imbalance that would otherwise hollow out
+κ. That same example is Exhibit A for the 4c.1 fixture: a layperson catches it
+in ten seconds, and NFCorpus cannot produce one like it.
+
+**Phase 4a scaffolded, ML left as stubs** (`src/retrieval_lab/generate.py`, the
+working mode). Cache, deterministic sampling, Ollama transport (`think: False`,
+temp 0), Weave `@op`, argparse and the sanity checks are wired; `build_prompt`,
+`parse_answer` and `should_refuse` raise `NotImplementedError` behind concept
+notes. It takes `results` as an argument rather than re-retrieving, and
+`context_for` reads `results` and never `qrels` — the same constraint
+`test_oracle.py` pins one level down, since a gold-but-unretrieved doc reaching a
+prompt would silently turn a real config into 4b's ceiling run.
+
+**D10's cache key was split in two while wiring it.** The decision recorded "all
+three model IDs in the generation cache key". Implemented as recorded, a swapped
+judge would discard every generation — and D10 *expects* the judges to change,
+since both are tentative until the fixture. So generations key on
+`(dataset, retriever, top_k, n_context, generator, prompt_version)` and
+judgements key on that plus `(judge, rubric_version)`. Intent preserved, blast
+radius corrected; recorded as a dated amendment under D10 and pinned by a test.
+
+**One bug worth the entry.** `generate.py`'s sanity checks originally ran *after*
+`cached_generations` wrote the file. The failure mode: a drifted parser raises
+"nothing cached" while the poisoned batch is already on disk, and the next run is
+a silent cache HIT serving it — uncatchable by rerun-and-diff, because generation
+is nondeterministic even at temperature 0. Validation now runs inside `compute()`
+before the write, and `test_a_poisoned_batch_is_never_written_to_disk` asserts the
+file does not exist. Found in review, not by a test failing.
+
+Test count 40 → 69 (`tests/test_hotpot_pool.py`, `tests/test_generate.py`), all
+green, still no download and ~8s.
+
 ## 2026-08-16 (the base model's dev loss, and Phase 2 closes for real)
 
 One number was outstanding and it decided a sentence: `dev_loss()` had been
