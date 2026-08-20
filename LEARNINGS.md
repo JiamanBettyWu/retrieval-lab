@@ -602,3 +602,136 @@ answer citing "[1]" for the claim that 7th Sea is fantasy-themed, which passage
 marked a lucky-guess fabrication right. What gold answers actually buy is
 stratification — drawing the 50 labels across correct and incorrect answers, so
 the class imbalance that makes κ meaningless cannot take hold.
+
+## 2026-08-19 — the sentinel the model won't say, and reasoning that isn't a rationale
+
+Two design questions about Phase 4a's output contract both looked like taste and
+both turned out to have measurements behind them.
+
+**A refusal marker that reads like a control token gets treated like one.**
+`REFUSAL = "__REFUSED__"` was already in `generate.py`, so the obvious move was
+to ask the model for that literal string. Eight unanswerable questions against a
+two-passage context, three candidate sentinels, `qwen3:8b` at temperature 0:
+
+```
+__REFUSED__            exact 5/8   tagless 3
+INSUFFICIENT_CONTEXT   exact 8/8   tagless 0
+NOT IN PASSAGES        exact 8/8   tagless 0
+```
+
+The failure is not what it looks like. The model reproduced `__REFUSED__`
+correctly every time — it **dropped the `<answer>` tags** and emitted the bare
+sentinel. The double underscores appear to read as a directive about the whole
+reply rather than as a value for a field, so the model skips the formatting it
+was otherwise happy to follow. The natural-language sentinels stay inside the
+frame because they read as things one would say.
+
+**Why 3-in-8 matters more than it sounds.** Trace it: a strict `parse_answer`
+finds no `<answer>` tag, returns `("", raw)`; a model-side `should_refuse`
+keying off that sees an empty string and returns `False`; and `validate()`'s
+`not g.refused and not g.answer.strip()` then counts a *correct refusal* as
+parser drift. Refusal rate is the metric D11 kept, and this wiring would have
+moved a third of it into the parse-miss column — the same shape as
+`NDCG@10 = 0.0000` meaning wrong doc ids, one layer up.
+
+Resolved by keeping two strings rather than one: the model emits a
+natural-language sentinel, `should_refuse` recognises it, and the pipeline
+normalises to `REFUSAL`. That preserves a split the dataclass already pays for —
+`raw` is what the model said, `answer` is what the pipeline concluded — and
+without it "the model declined" and "my rule classified this as a decline" are
+the same bytes, which is exactly the model-side/pipeline-side distinction the
+stub's docstring calls not interchangeable. n=8 on one prompt wording, and the
+rule stated the sentinel bare; phrasing it as `<answer>__REFUSED__</answer>`
+might well close the gap and was not tested.
+
+**Thinking mode is not a free rationale.** `think: True` looks like it hands you
+the supporting text without asking the model for it. Three things say otherwise.
+Ollama returns it as a separate `thinking` field, so it never reaches `raw` and
+the transport's return type would have to change. What it contains is
+meta-commentary about the task, not evidence — a probe returned *"the question
+is asking for a brief answer... let me confirm there's no trick here"* — and it
+carries **no citation markers**, so the ungrounded-citation failure mode the
+dataset probe caught would be invisible in it. And chain-of-thought is famously
+not a faithful record of what produced the answer, so judging it measures
+whether the *narration* is grounded, not whether the answer is. It stays worth
+measuring as a correctness ablation; it is not the rationale. Note that `think`
+is absent from `generation_cache_path`, so running it as a config today would
+silently collide with the `think: False` file.
+
+**Three facts that constrain the prompt, from the data rather than from taste.**
+458 of 7,405 gold answers are literally `yes` or `no` (6.2%) — a prompt asking
+only for a span floors token-F1 at zero on one question in sixteen. Gold answers
+run 2 words at the median, 4 at p90, so the length instruction is calibratable
+and "a sentence" is wrong. And context is not scarce: ten docs is roughly 1,200
+tokens against a 40,960 window, verified by a 9,038-token prompt coming back
+with `prompt_eval_count: 9038` rather than a silent truncation.
+
+## 2026-08-19 — the adverb was innocent, and four of six wrong answers weren't wrong
+
+The grounding rule reads *"Only answer if the passages fully support it."* The
+worry was that HotpotQA makes that unsatisfiable: the answer lives in two gold
+passages jointly and in neither alone, so a model reading "fully" strictly
+should refuse on exactly the questions the dataset is built from. The wording
+would then set the refusal rate — the metric D11 kept — and it would read as a
+retrieval signal when it was an adverb.
+
+**Feeding the model gold-only context turns that into a measurement.** Retrieval
+is perfect by construction, so every refusal is caused by wording alone. Fifteen
+questions, three wordings differing in one rule line, `qwen3:8b` at temperature 0:
+
+```
+1-current (fully support)   false-refusals 1/15 | tags 15/15 | exact-match 9/15
+2-  + "may combine"         false-refusals 1/15 | tags 15/15 | exact-match 8/15
+3-softened (support)        false-refusals 0/15 | tags 15/15 | exact-match 8/15
+```
+
+**The prediction was wrong.** The model combines across passages without being
+told it may, and the licence to combine buys nothing. The exact-match spread is
+noise at this n — it says no variant loses, not that the current one wins. The
+wording stands as written.
+
+The single refusal survives inspection as genuine rather than as annotation
+noise: the linking fact the question turns on is present in the full gold text,
+and the model's own rationale *found the answer* — "the reform opera that came
+before Orfeo ed Euridice is Alceste, which is mentioned in passage [2]" — before
+refusing anyway, tangled in the question's nested phrasing rather than in the
+grounding rule. The softened wording rescued that one case, which is a hint at
+n=1 and nothing more.
+
+**Format adherence held 45/45 under rationale-first ordering**, closing a caveat
+the earlier sentinel probe left open — those 8/8 runs were answer-first, so the
+ordering actually shipped had never been exercised. Scope it honestly though:
+these were two-passage prompts, and production is ten passages at roughly 1,200
+tokens. Adherence at that length is still unmeasured, with `validate()`'s 20%
+parse-miss gate as the net on the first real batch.
+
+**The finding with downstream weight is not about the prompt at all.** Of the six
+answers that missed exact match, four were not wrong:
+
+```
+gold 'the George Washington Bridge'   model 'George Washington Bridge'
+gold 'an Otto Dix painting'           model "Otto Dix's painting"
+gold 'genus of plants'                model 'plant genera'
+gold '"Alceste"'                      model 'INSUFFICIENT_CONTEXT'
+gold 'Sesame Street'                  model 'AOL'
+gold 'Helen Elizabeth Hunt'           model 'yes'
+```
+
+An article, a possessive, a pluralisation — and gold answers carry literal
+punctuation, `'"Alceste"'` quotes included. Standard HotpotQA normalisation
+(lowercase, strip articles, strip punctuation) dissolves all of them, putting
+semantic accuracy on gold context near 13/15 rather than 9/15. **The correctness
+scorer's normaliser is load-bearing, not a detail**: omit it and the reported
+number lands around 60% where the truth is nearer 87%, and a normalisation gap
+gets read as a weak generator. Same genre as `NDCG@10 = 0.0000` meaning wrong
+doc ids, and the constraint applies to code nobody has written yet.
+
+**One thing to watch when a real batch runs.** The `'yes'` miss came from *"Who
+has won more awards, Dan Schneider or Helen Hunt?"* — a comparison-shaped
+question wanting a name, where the prompt's yes/no rule plausibly over-fired.
+Only 6.2% of gold answers are actually yes or no, so a batch returning
+materially more than that has one obvious suspect.
+
+Method note worth keeping: gold-only context isolates the prompt from retrieval
+completely, and it is milestone 4b's oracle run pointed at a different question.
+The ceiling experiment and the prompt calibration are the same setup.

@@ -4,22 +4,19 @@ Forward-looking state. Session history lives in [SESSIONS.md](SESSIONS.md).
 
 ## Current state
 
-**As of 2026-08-17 (latest session):** **Phase 4 has a dataset and a corpus.**
-D12 moved Phase 4 off NFCorpus — whose queries turned out not to be questions —
-onto **`hotpotqa-distractor-pool`**, a 66,581-doc corpus pooled from HotpotQA's
-dev distractor paragraphs and built by `src/retrieval_lab/hotpot_pool.py`.
-Correctness scoring is back in scope (HotpotQA ships gold short answers, so
-nothing is invented) but **does not replace the ~50 hand labels** — those
-calibrate the judge on *faithfulness*, which no dataset labels.
-`src/retrieval_lab/generate.py` is scaffolded with `build_prompt`,
-`parse_answer` and `should_refuse` left as stubs. 69 tests green; nothing has
-been generated yet, so no generation cache exists. Detail in
-[SESSIONS.md](SESSIONS.md); findings in `LEARNINGS.md` (2026-08-17).
+**As of 2026-08-19 (latest session):** **Phase 4a has an output contract, and it
+was measured rather than asserted.** `build_prompt` is hand-written and probed —
+tagged blocks, rationale-first, `[n]` citations 1-indexed, titles rendered,
+`INSUFFICIENT_CONTEXT` inside `<answer>`; the grounding wording survived a
+false-refusal test on gold context (1/15) and the format held 45/45.
+`parse_answer` and `should_refuse` remain stubs but are now unblocked. Nothing
+has been generated at scale, so no generation cache exists. 69 tests green;
+`src/retrieval_lab/generate.py` is **uncommitted**. Detail in
+[SESSIONS.md](SESSIONS.md); findings in `LEARNINGS.md` (2026-08-19 ×2).
 
 ```bash
-pytest                                                # 69 tests, ~8s, no download
-python -m retrieval_lab.hotpot_pool                   # build the Phase 4 corpus (once)
-python -m retrieval_lab.generate --n-queries 50       # Phase 4a — needs `ollama serve` + the stubs
+pytest                                                # 69 tests, ~9s, no download
+python -m retrieval_lab.generate --n-queries 50       # Phase 4a — needs `ollama serve` + the two remaining stubs
 python -m retrieval_lab.evaluate --dataset nfcorpus   # baseline 0.3159 (Phase 1 rerank: 0.3412)
 ```
 
@@ -49,72 +46,80 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
   fact voids every generation already scored under it.
 - **Constraint that survives any swap:** the local judge must not be a qwen3
   model. The generator is `qwen3:8b`, and a shared pretraining corpus and
-  post-training recipe is exactly the self-bias D10 exists to dodge; a different
-  parameter count does not buy the independence a different family does.
-- **Amended 2026-08-17 (cache key):** one key became two — generations key on
-  `(dataset, retriever, top_k, n_context, generator, prompt_version)`,
-  judgements on that plus `(judge, rubric_version)`. Folding judge IDs into the
-  generation key would discard every generation whenever only a judge changed,
-  and this decision *expects* the judges to change. Pinned by
+  post-training recipe is exactly the self-bias D10 exists to dodge.
+- **Amended 2026-08-17 (cache key):** generations and judgements key
+  separately, so swapping a judge does not discard generations — pinned by
   `tests/test_generate.py::test_swapping_a_judge_does_not_invalidate_generations`.
 - **Blocked on:** the fixture existing (see D13 and "Pick up here").
 
 ### D13: Does the local judge need to be 27B, or is a smaller/different model better suited?
-- **Context (raised 2026-08-17, Betty):** `Qwen3.8-27B` was picked for D10's
-  second-judge slot on "bigger is safer", never on a measurement. `TODO.md` has
-  carried "unverified whether a dense 27B (~16–17GB resident at Q4) runs at a
-  usable rate on this machine" since it was chosen.
-- **The principle to test:** judging is a *classification* task against a
-  rubric, not a generation task. Parameter count mostly buys world knowledge,
-  and the judge needs little — everything it rules on is supplied in the prompt.
-  What it needs is instruction-following and calibration, which smaller
-  instruct-tuned models may have plenty of.
-- **Options:** A) **Keep `Qwen3.8-27B`** — as recorded, but unmeasured and
-  possibly too slow to run on the full sample B) **Bake off 4–5 candidates
-  against the 4c.1 fixture** — the fixture is small, so testing five costs about
-  what testing one does C) **Drop the local judge**, run Sonnet 5 alone — cheapest,
-  but forfeits the open-weight-agreement result and the "could an open-weight
-  judge stand alone?" question a later phase wants answered.
-- **Recommendation:** B. It is the same discipline as the rest of the repo —
-  decide on the fixture's evidence, not on a spec sheet — and it costs an
-  evening at most.
-- **Blocked on:** the 4c.1 fixture, which does not exist yet. Judges cannot be
-  compared before there is something to compare them on.
-- **If B:** score each candidate on fixture separation *and* throughput on this
-  machine, then re-open D10's second-judge slot with numbers. **If C:** D10's
-  "two judges" half is withdrawn and the κ section loses its agreement column.
+- **Context:** `Qwen3.8-27B` was picked on "bigger is safer", never measured,
+  and it is unverified whether a dense 27B (~16–17GB at Q4) runs usably here.
+  The principle to test: judging is *classification* against a rubric, and
+  everything it rules on is in the prompt — so parameter count may buy little.
+- **Options:** A) **Keep `Qwen3.8-27B`** — as recorded, unmeasured B) **Bake off
+  4–5 candidates against the 4c.1 fixture** — the fixture is small, so five cost
+  about what one does C) **Drop the local judge**, run Sonnet 5 alone
+- **Recommendation:** B — decide on the fixture's evidence, not a spec sheet.
+- **Blocked on:** the 4c.1 fixture, which does not exist yet. Also note
+  `ollama list` currently holds only `qwen3:8b`, which is excluded as a judge —
+  every candidate needs a multi-GB pull, worth starting in the background early.
+- **If B:** score each on fixture separation *and* throughput, then re-open
+  D10's second-judge slot with numbers. **If C:** D10's "two judges" half is
+  withdrawn and the κ section loses its agreement column.
+
+### D14: Do refusals enter the token-F1 denominator? (new, 2026-08-19)
+- **Context:** a refusal against gold `Animorphs` scores 0, which reads as
+  "wrong" when it may be "correctly declined". Raised twice this session and
+  deferred twice; it changes what the README's correctness number *means*.
+- **Options:** A) **Correctness over all queries** — refusals count as wrong;
+  one number, but it conflates two failure profiles B) **Correctness over
+  non-refused queries, refusal rate reported alongside** — separates
+  "hallucinates" from "declines", which is the distinction D11 kept the refusal
+  branch to measure, at the cost of a denominator that varies per config
+- **Recommendation:** B, precisely because the per-config refusal rate is
+  already a headline number and entangling it with correctness makes both
+  unreadable — but A is defensible if the README wants one figure.
+- **Blocked on:** nothing. Settle it before any correctness number is published.
 
 ## Needs attention
 
-- ⚠️ **The 4c.1 fixture does not exist** (`data/labels/` is empty) and it gates
-  both D10 and D13 — no judge can be validated, and no generation scored under
-  an unvalidated judge counts. It is ground truth, so it is Betty's to author;
-  `scratchpad/probe.md` has seed material, including a genuine ungrounded case
-  (hotpot Q2 cites [1] for a claim [1] never makes).
-- ⚠️ **The contamination refutation is generator-specific and n=5.** If
-  `qwen3:8b` is ever swapped for a larger generator, re-run the no-context probe
-  before trusting `hotpotqa-distractor-pool` — a generator that answers from
-  memory flattens every per-config difference. Gold answers make this a script
-  run, not a reading session.
-- ⚠️ **`SESSIONS.md` is 530+ lines**, past the ~500 rotation threshold. Not
-  rotated tonight because that moves files; say the word and it archives to
-  `sessions/` with a fresh journal started.
+- ⚠️ **`src/retrieval_lab/generate.py` is uncommitted** — this session's
+  `build_prompt` lives only in the working tree. Left out of the handoff commit
+  deliberately so it lands under Betty's own message.
+- ⚠️ **The scratchpad probe material has no durable home.** `probe.md` (cited by
+  the old TODO but never in the repo) was recovered from a prior session's
+  `/private/tmp/claude-501/…` dir; it plus tonight's `prompt_probe.py` and
+  `sentinel_probe.py` sit in an equally ephemeral scratchpad. A reboot loses them.
+- ⚠️ **The 4c.1 fixture still does not exist** (`data/labels/` is empty) and it
+  gates D10 and D13. Betty's to author, but now **from real pipeline
+  generations** rather than the old probe, so the labels match the shipped format.
+- ⚠️ **The correctness scorer's normaliser is load-bearing.** Standard HotpotQA
+  normalisation (lowercase, strip articles, strip punctuation) moved gold-context
+  accuracy from 9/15 to ~13/15 — omit it and you report ~60% where the truth is
+  ~87%. Test it; don't eyeball it.
 - ⚠️ **`README.md` has no Phase 4 row yet** and still describes the project as
-  three-dataset. Left alone deliberately — Phase 4 has produced no number, and
-  the ablation table is for landed results.
+  three-dataset. Left alone deliberately — Phase 4 has still produced no landed
+  number, and the ablation table is for results.
 - ⚠️ Carried forward: **`tests/test_finetune.py` still does not exist** but is
   cited in `load_triples`'s docstring — should pin train ∩ dev disjointness, the
   `n + k` guard, and the `--dev-loss` k/batch-size defaults.
 - ⚠️ Carried forward: the retrieval cache key does not cover `retrieve.py`'s
-  contents (`--refresh` after editing); `data/`/`cache/` resolve against cwd.
+  contents (`--refresh` after editing); `data/`/`cache/` resolve against cwd;
+  and the contamination refutation is generator-specific at n=5, so re-run the
+  no-context probe before trusting the corpus under a larger generator.
 
 ## Pick up here
 
-1. **Author the 4c.1 grounded/ungrounded fixture.** It gates D10 and D13, and
-   nothing downstream is trustworthy without it. Seed from `scratchpad/probe.md`.
-2. **Bake off local judge candidates against it** (D13) — fixture separation and
-   throughput on this machine, not spec sheets. Not a qwen3 model.
-3. **Fill `generate.py`'s three stubs** — `build_prompt` first, since the output
-   format it establishes is what `parse_answer`, token-F1 and the judge rubric
-   all have to agree with. First run spends minutes on a retrieval cache miss
-   (66K docs) before reaching the stubs; that is not a hang.
+1. **Fill `parse_answer` and `should_refuse`** — the contract they must agree
+   with is now measured, not assumed: `<rationale>…</rationale>` then
+   `<answer>…</answer>`, refusal as `INSUFFICIENT_CONTEXT` *inside* `<answer>`,
+   normalised to `REFUSAL` by the pipeline so `raw` keeps the model's own word.
+2. **Run a small generation batch (n≈10–20)** on real retrieved context. First
+   run spends minutes on a retrieval cache miss (66K docs) before reaching the
+   generator; that is not a hang. Watch two things the probes could not measure:
+   format adherence at ten passages (~1,200 tokens, vs the two-passage prompts
+   tested) and the yes/no rate against its 6.2% base rate — the probe caught one
+   comparison-shaped question answered `yes` when gold was a name.
+3. **Author the 4c.1 fixture from that batch**, stratified across correct and
+   incorrect answers — then D13's bake-off has something to bake off against.
