@@ -718,13 +718,40 @@ gold 'Helen Elizabeth Hunt'           model 'yes'
 ```
 
 An article, a possessive, a pluralisation — and gold answers carry literal
-punctuation, `'"Alceste"'` quotes included. Standard HotpotQA normalisation
-(lowercase, strip articles, strip punctuation) dissolves all of them, putting
-semantic accuracy on gold context near 13/15 rather than 9/15. **The correctness
-scorer's normaliser is load-bearing, not a detail**: omit it and the reported
-number lands around 60% where the truth is nearer 87%, and a normalisation gap
-gets read as a weak generator. Same genre as `NDCG@10 = 0.0000` meaning wrong
-doc ids, and the constraint applies to code nobody has written yet.
+punctuation, `'"Alceste"'` quotes included. **The correctness scorer's
+normaliser is load-bearing, not a detail**, and a normalisation gap gets read as
+a weak generator — same genre as `NDCG@10 = 0.0000` meaning wrong doc ids, on
+code nobody has written yet.
+
+**Corrected the same evening, by actually running the metric.** This paragraph
+first claimed normalisation "dissolves all of them", moving accuracy from 9/15
+to ~13/15 — 60% to ~87%. Implementing the SQuAD/HotpotQA normaliser and scoring
+the pairs says otherwise:
+
+```
+model 'George Washington Bridge'  gold 'the George Washington Bridge'  F1 1.000
+model "Otto Dix's painting"       gold 'an Otto Dix painting'          F1 0.667
+model 'plant genera'              gold 'genus of plants'               F1 0.000
+model 'INSUFFICIENT_CONTEXT'      gold '"Alceste"'                     F1 0.000
+model 'AOL'                       gold 'Sesame Street'                 F1 0.000
+model 'yes'                       gold 'Helen Elizabeth Hunt'          F1 0.000
+
+exact-match 0.600   |   mean token-F1 0.711
+```
+
+Only the article case dissolves completely. The possessive survives normalisation
+as the token `dixs` and earns partial credit, not full. `plant genera` against
+`genus of plants` scores **zero** — token-F1 is surface overlap and knows nothing
+about morphology, so two ways of saying the same thing share no tokens. And
+HotpotQA's own scorer makes yes/no all-or-nothing, so the `yes` miss gets no
+partial credit either.
+
+So normalisation is worth **0.600 → 0.711**, not 0.600 → 0.87. The 87% was a
+*human* read of which answers were semantically fine, silently substituted for
+what the metric reports. Which is the exact failure this file keeps cataloguing:
+a well-formed, plausible number that nobody computed. The lesson survives — the
+normaliser earns 11 points and must be tested — but the number it earns is the
+one the metric gives, not the one the reader would.
 
 **One thing to watch when a real batch runs.** The `'yes'` miss came from *"Who
 has won more awards, Dan Schneider or Helen Hunt?"* — a comparison-shaped

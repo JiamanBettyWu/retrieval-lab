@@ -98,11 +98,14 @@ the inspection of the single refusal are in `LEARNINGS.md`.
 **The result that matters was incidental to the test.** Of six answers missing
 exact match on gold context, four were not wrong — an article, a possessive, a
 pluralisation, and gold answers carrying literal punctuation (`'"Alceste"'`).
-Standard HotpotQA normalisation dissolves all four, putting semantic accuracy
-near 13/15 rather than 9/15. The correctness scorer's normaliser is therefore
-load-bearing rather than a detail: omit it and the reported number lands near
-60% where the truth is nearer 87%, and the gap reads as a weak generator. This
-constrains code nobody has written yet.
+The correctness scorer's normaliser is therefore load-bearing rather than a
+detail, and the gap reads as a weak generator. This constrains code nobody has
+written yet. **Amended after the handoff:** the first draft of this claim put
+normalisation's value at 60% → ~87%; implementing the metric and running it gives
+**exact-match 0.600 → mean token-F1 0.711**. Only the article case dissolves
+fully, the possessive earns partial credit, and `plant genera` vs `genus of
+plants` scores zero because token-F1 is surface overlap. Worked numbers in
+`LEARNINGS.md` (2026-08-19).
 
 **Left open deliberately:** whether refusals enter the token-F1 denominator.
 Raised twice, deferred twice, now recorded as D14 so it stops evaporating — it

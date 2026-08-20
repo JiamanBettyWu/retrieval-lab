@@ -15,6 +15,9 @@ reports/*.json
 .weave/
 wandb/
 scratch.ipynb
+# throwaway probes and their output — kept on disk because they are re-runnable
+# evidence for LEARNINGS entries, ignored because they are not repo code
+scratchpad/
 # build artifacts (a plain `pip install -e .` leaves these; uv does not)
 build/
 dist/
