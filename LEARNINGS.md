@@ -854,3 +854,77 @@ run skips straight to the generator. The generation cache key covers neither
 `--n-queries` nor `--seed`, so this batch's file collides with any later n; the
 post-hoc count check catches it and `--refresh` clears it, but the trial's
 generations do not carry forward. Its deliverables were the two measurements.
+
+## 2026-08-23 — the refusal gate is calibrated, and the split is the finding
+
+One hundred questions, same config as the fifteen: ten retrieved passages,
+`qwen3:8b` at temperature 0, prompt v1. Everything the trial measured
+replicated, and the number that looked alarming resolved into a result.
+
+```
+                 n=15     n=100
+refusal rate     33.3%    34.0%     95% CI [25.5%, 43.7%]
+parse misses     0/15     0/100
+yes/no answers   0/15     7/100  (7.0% against a 6.2% base rate)
+```
+
+Format adherence at ten passages is now 115/115 across both batches, which
+closes the caveat the two-passage probes left open for good. The yes/no rule
+came back clean: `0/15` had looked like the rule under-firing, and at n=100 it
+lands within a point of the base rate, so it was small-n and nothing else. The
+CI narrowed from 43 points to 18, as the sizing arithmetic predicted.
+
+**Splitting refusals by how much gold retrieval actually delivered turns a flat
+number into a curve.**
+
+```
+refusal rate by gold passages in context (HotpotQA has exactly 2 per question)
+  full gold (2/2)    5/51  =   9.8%   [ 4.3%, 21.0%]
+  partial  (1/2)    22/41  =  53.7%   [38.7%, 67.9%]
+  none     (0/2)     7/8   =  87.5%   [52.9%, 97.8%]
+```
+
+Monotonic, and the full-gold and partial-gold intervals do not overlap. This is
+the first Phase 4 claim with real separation behind it: **as retrieval degrades
+this generator declines rather than invents**, which is the safe half of the
+failure space and the exact question the refusal branch was kept to answer.
+
+**The claim is descriptive, not causal, and the distinction is worth being
+strict about.** Those three buckets contain *different queries*. Questions whose
+gold docs retrieval missed may also be vaguer or harder questions, so
+"worse retrieval → more refusal" is confounded with "harder question → more
+refusal" in this analysis and cannot be untangled within it. The clean test is
+the paired one the plan already specifies — the same fixed query sample under
+four retrieval configs plus the ceiling — where question difficulty is held
+constant by construction and a monotonic dose-response across configs cannot be
+explained by difficulty. **The stratified split earns its place as a diagnostic
+of where refusals concentrate inside one config; the causal reading has to wait
+for the paired run.** Designing that run has its own trap, recorded as an
+amendment on 4b in `docs/plan.md` (2026-08-23) rather than repeated here.
+
+**The rarest failure stayed rare, and the reason is the result.** Only one of the
+hundred answers was produced with zero gold passages in context:
+
+```
+            full gold   partial   none   | total
+  answered       46        19        1   |   66
+  refused         5        22        7   |   34
+```
+
+The pure hallucination case is thin *because* the model refuses 87.5% of the
+time when it has nothing to work from. Good calibration is bad fixture supply,
+and the 4c.1 fixture has to be built around that rather than wish it away: the
+19 answers produced from partial evidence are where faithfulness is genuinely at
+stake, since the model committed to an answer while holding half the chain, and
+the 5 over-refusals are the other interesting stratum. Sampling the
+"answered with nothing" profile richly would take a much larger batch, or a
+config chosen to retrieve badly on purpose.
+
+**A note on what the n=15 batch was worth.** Every headline number it produced
+survived the 7x scale-up, including the two it got by luck — `0/15` yes/no and
+`0/15` parse misses were both consistent with the true rates rather than
+evidence for them. What it could not do was carry a claim: a refusal rate of
+"somewhere between 15% and 58%" is not a measurement, and two of its five
+fixture strata held a single example. The trial's value was catching whether the
+pipeline worked at all, at ten passages, on real retrieved context — and it did
+that in four minutes.
