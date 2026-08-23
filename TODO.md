@@ -4,19 +4,25 @@ Forward-looking state. Session history lives in [SESSIONS.md](SESSIONS.md).
 
 ## Current state
 
-**As of 2026-08-19 (latest session):** **Phase 4a has an output contract, and it
-was measured rather than asserted.** `build_prompt` is hand-written and probed —
-tagged blocks, rationale-first, `[n]` citations 1-indexed, titles rendered,
-`INSUFFICIENT_CONTEXT` inside `<answer>`; the grounding wording survived a
-false-refusal test on gold context (1/15) and the format held 45/45.
-`parse_answer` and `should_refuse` remain stubs but are now unblocked. Nothing
-has been generated at scale, so no generation cache exists. 69 tests green;
-`src/retrieval_lab/generate.py` is **uncommitted**. Detail in
-[SESSIONS.md](SESSIONS.md); findings in `LEARNINGS.md` (2026-08-19 ×2).
+**As of 2026-08-22 (latest session):** **Phase 4a parses, and D14 is settled.**
+`build_prompt` is hand-written, probed, and now at **`PROMPT_VERSION = "v1"`** —
+the refusal rule pins the sentinel *inside* `<answer>` and requires a rationale
+on refusals too, closing an ambiguity the v0 wording left open.
+`parse_answer` is written and pinned by nine tests; its miss contract (`("", raw)`
+whenever the answer is empty, however it got that way) is what lets
+`should_refuse` see a sentinel the model emitted without tags. **`should_refuse`
+is the last stub.** Nothing has been generated at scale, so no generation cache
+exists. 78 tests green. Detail in [SESSIONS.md](SESSIONS.md); findings in
+`LEARNINGS.md` (2026-08-19 ×2).
+
+**D14 is decided (2026-08-22): correctness is reported over non-refused queries,
+with refusal rate published alongside.** Consequence to carry into every
+correctness number: the denominator varies per config, so a README row quoting
+correctness must state its n.
 
 ```bash
-pytest                                                # 69 tests, ~9s, no download
-python -m retrieval_lab.generate --n-queries 50       # Phase 4a — needs `ollama serve` + the two remaining stubs
+pytest                                                # 78 tests, ~8s, no download
+python -m retrieval_lab.generate --n-queries 50       # Phase 4a — needs `ollama serve` + should_refuse
 python -m retrieval_lab.evaluate --dataset nfcorpus   # baseline 0.3159 (Phase 1 rerank: 0.3412)
 ```
 
@@ -68,25 +74,14 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
   D10's second-judge slot with numbers. **If C:** D10's "two judges" half is
   withdrawn and the κ section loses its agreement column.
 
-### D14: Do refusals enter the token-F1 denominator? (new, 2026-08-19)
-- **Context:** a refusal against gold `Animorphs` scores 0, which reads as
-  "wrong" when it may be "correctly declined". Raised twice this session and
-  deferred twice; it changes what the README's correctness number *means*.
-- **Options:** A) **Correctness over all queries** — refusals count as wrong;
-  one number, but it conflates two failure profiles B) **Correctness over
-  non-refused queries, refusal rate reported alongside** — separates
-  "hallucinates" from "declines", which is the distinction D11 kept the refusal
-  branch to measure, at the cost of a denominator that varies per config
-- **Recommendation:** B, precisely because the per-config refusal rate is
-  already a headline number and entangling it with correctness makes both
-  unreadable — but A is defensible if the README wants one figure.
-- **Blocked on:** nothing. Settle it before any correctness number is published.
-
 ## Needs attention
 
-- ⚠️ **`src/retrieval_lab/generate.py` is uncommitted** — this session's
-  `build_prompt` lives only in the working tree. Left out of the handoff commit
-  deliberately so it lands under Betty's own message.
+- ⚠️ **`LEARNINGS.md`'s `mean token-F1 0.711` predates D14.** It averages over
+  15 gold-context questions including the Alceste refusal. Under the settled
+  convention the same probe reads **0.7619 over 14, refusal rate 6.7%**. Nothing
+  to revert — it is a probe result, not a published claim — but quote it the new
+  way from here, and write the scorer so refusals leave the denominator rather
+  than scoring 0.
 - ⚠️ **The scratchpad probe material has no durable home.** `probe.md` (cited by
   the old TODO but never in the repo) was recovered from a prior session's
   `/private/tmp/claude-501/…` dir; it plus tonight's `prompt_probe.py` and
@@ -111,10 +106,12 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
 
 ## Pick up here
 
-1. **Fill `parse_answer` and `should_refuse`** — the contract they must agree
-   with is now measured, not assumed: `<rationale>…</rationale>` then
-   `<answer>…</answer>`, refusal as `INSUFFICIENT_CONTEXT` *inside* `<answer>`,
-   normalised to `REFUSAL` by the pipeline so `raw` keeps the model's own word.
+1. **Fill `should_refuse`** — the last stub. Model-side: recognise
+   `INSUFFICIENT_CONTEXT` in the parsed answer and let the pipeline normalise it
+   to `REFUSAL`, so `raw` keeps the model's own word. The one real decision left
+   is what it returns when `answer == ""`, which is exactly the case
+   `parse_answer`'s `("", raw)` contract was built to feed — the sentinel may be
+   sitting in the rationale slot untagged.
 2. **Run a small generation batch (n≈10–20)** on real retrieved context. First
    run spends minutes on a retrieval cache miss (66K docs) before reaching the
    generator; that is not a hang. Watch two things the probes could not measure:

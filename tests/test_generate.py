@@ -2,14 +2,17 @@
 
     pytest tests/test_generate.py
 
-Pins the wiring only — `build_prompt`, `parse_answer` and `should_refuse` are
-stubs, and these tests deliberately never call them. No model, no Ollama, no
-download.
+Pins the wiring, plus `parse_answer`'s output contract. `should_refuse` is
+still a stub, and neither it nor `build_prompt` is called from here — the prompt
+is exercised by probes, not fixtures.
+No model, no Ollama, no download.
 
-The two load-bearing ones are `test_context_comes_from_results_not_qrels` (the
-same constraint `test_oracle.py` pins one level down) and the cache-key tests
-(a stale generation cache cannot be caught by re-running, because generation is
-nondeterministic even at temperature 0).
+The three load-bearing ones are `test_context_comes_from_results_not_qrels` (the
+same constraint `test_oracle.py` pins one level down), the cache-key tests (a
+stale generation cache cannot be caught by re-running, because generation is
+nondeterministic even at temperature 0), and
+`test_a_partial_parse_still_returns_raw` — see the parsing section below for why
+that one is not a formality.
 """
 import json
 
@@ -20,6 +23,7 @@ from retrieval_lab.generate import (
     Generation,
     cached_generations,
     context_for,
+    parse_answer,
     sample_queries,
     validate,
 )
@@ -164,3 +168,109 @@ def test_refusals_are_not_counted_as_parse_misses():
 def test_a_few_parse_misses_are_tolerated():
     rows = [_gen("q0", answer="")] + [_gen(f"q{i}") for i in range(1, 10)]
     assert validate(rows) == ["q0"]
+
+
+# ───────────────────────── parse_answer's contract ─────────────────────────
+#
+# These pin the seam between a chat model's output and a scoring metric. The
+# shape they enforce comes from measurement, not taste: `build_prompt` asks for
+# `<rationale>…</rationale>` then `<answer>…</answer>`, with the refusal
+# sentinel INSUFFICIENT_CONTEXT *inside* the answer tags — a natural-language
+# sentinel because `__REFUSED__` read to the model as a directive about the
+# whole reply and went tagless 3/8 (LEARNINGS, 2026-08-19).
+
+WELL_FORMED = "<rationale>Nelson County is where it sits [1]</rationale>\n<answer>Nelson County</answer>"
+
+
+def test_a_well_formed_reply_splits_into_answer_and_rationale():
+    assert parse_answer(WELL_FORMED) == ("Nelson County", "Nelson County is where it sits [1]")
+
+
+def test_the_sentinel_is_returned_verbatim_rather_than_interpreted():
+    """The parser EXTRACTS; `should_refuse` recognises; the pipeline normalises.
+
+    Collapsing those would merge "the model declined" with "my rule classified
+    this as a decline" into one string, which is the model-side/pipeline-side
+    distinction `should_refuse`'s docstring calls not interchangeable — and the
+    reason `REFUSAL` is a different word from the one the prompt asks for.
+    """
+    raw = "<rationale>the passages do not say [1][2]</rationale><answer>INSUFFICIENT_CONTEXT</answer>"
+    answer, _ = parse_answer(raw)
+    assert answer == "INSUFFICIENT_CONTEXT"
+
+
+def test_a_missing_answer_tag_returns_raw_in_the_rationale_slot():
+    """`("", raw)` is the miss contract, and `raw` is not decoration.
+
+    It is the only channel by which `should_refuse` can see text the parser did
+    not recognise — such as a sentinel the model emitted without its tags.
+    """
+    assert parse_answer("INSUFFICIENT_CONTEXT") == ("", "INSUFFICIENT_CONTEXT")
+
+
+def test_a_partial_parse_still_returns_raw():
+    """LOAD-BEARING. A rationale that parses must not mask an answer that did not.
+
+    The failure this blocks, in full: the model writes a rationale and then emits
+    the sentinel *without* answer tags. If the rationale slot carried the parsed
+    rationale instead of `raw`, the word INSUFFICIENT_CONTEXT would vanish before
+    `should_refuse` ever saw it — so a correct refusal gets booked as parser
+    drift by `validate()`, and refusal rate (the metric D11 kept) quietly loses
+    those queries to the parse-miss column. Same shape as `NDCG@10 = 0.0000`
+    meaning wrong doc ids: well-formed output, wrong ledger.
+
+    Re-breakable by the natural refactor: splitting the two lookups into
+    independent `try` blocks that each fall through to a default instead of
+    returning early. The empty answer then travels with the *parsed* rationale
+    and `raw` is dropped. Nothing raises when that happens.
+    """
+    raw = "<rationale>the passages do not state this [1][2]</rationale>\nINSUFFICIENT_CONTEXT"
+    assert parse_answer(raw) == ("", raw)
+
+
+def test_empty_answer_tags_count_as_a_miss():
+    """The invariant is "answer empty", not "answer tag absent".
+
+    `<answer></answer>` matches the regex, so the IndexError guard never fires;
+    without an explicit emptiness check the miss would skip the `raw` path.
+    """
+    raw = "<rationale>r [1]</rationale><answer></answer>"
+    assert parse_answer(raw) == ("", raw)
+
+
+def test_a_missing_rationale_does_not_discard_a_good_answer():
+    """Token-F1 needs the answer alone; a missing rationale only degrades 4c.
+
+    Failing the whole parse here would book a perfectly scoreable answer against
+    `validate()`'s 20% parse-miss gate.
+    """
+    raw = "<answer>Nelson County</answer>"
+    assert parse_answer(raw) == ("Nelson County", raw)
+
+
+def test_parsing_does_not_normalise_the_answer():
+    """Whitespace only. Normalisation belongs to the correctness scorer.
+
+    HotpotQA gold answers carry literal punctuation — `'"Alceste"'` includes its
+    quote marks — and standard normalisation moved gold-context accuracy from
+    9/15 to ~13/15. Doing it in two places would double-normalise somewhere no
+    test is watching.
+    """
+    answer, _ = parse_answer('<rationale>r [2]</rationale><answer>  "Alceste"  </answer>')
+    assert answer == '"Alceste"'
+
+
+def test_a_multiline_rationale_survives():
+    """Rationales span lines, so the pattern needs DOTALL; without it this
+    returns a miss and the faithfulness judge reads nothing."""
+    raw = "<rationale>line one [1]\nline two [2]</rationale>\n<answer>yes</answer>"
+    assert parse_answer(raw) == ("yes", "line one [1]\nline two [2]")
+
+
+def test_the_first_answer_block_wins():
+    """Documents a decision, not a law: qwen3 sometimes restates its answer, and
+    first-vs-last was chosen without evidence. Revisit against a real ten-passage
+    batch; until then this test is what makes the choice visible when it changes."""
+    raw = "<rationale>r [1]</rationale><answer>AOL</answer> ... <answer>Sesame Street</answer>"
+    answer, _ = parse_answer(raw)
+    assert answer == "AOL"

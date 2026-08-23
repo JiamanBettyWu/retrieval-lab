@@ -32,6 +32,7 @@ import argparse
 import json
 import logging
 import random
+import re
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -48,7 +49,7 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 
 # Bump on EVERY prompt edit. It is the only thing standing between a reworded
 # prompt and a cache that silently serves answers to the previous wording.
-PROMPT_VERSION = "v0"
+PROMPT_VERSION = "v1"
 
 REFUSAL = "__REFUSED__"
 
@@ -94,7 +95,31 @@ def build_prompt(question: str, docs: list[dict]) -> str:
 
     Bump PROMPT_VERSION whenever you touch this.
     """
-    raise NotImplementedError("build_prompt is yours — see the concept notes above")
+    
+    res = []
+    for i, doc in enumerate(docs, 1):
+        temp = f"[{i}] {doc['title']}. {doc['text']}"
+        res.append(temp)
+
+    passages = "\n\n".join(res)
+
+    prompt = f"""
+Answer the question using ONLY the passages below. Cite passage as [1], [2]. 
+
+Passages:\n{passages}
+
+Rules:
+    - Only answer if the passages fully support it. Otherwise, output <answer>INSUFFICIENT_CONTEXT</answer> with rationale.
+    - Each answer should be a few words. 
+    - If the question just needs a yes or no answer, answer it with only yes/no . 
+
+Format your reply exactly as:
+    <rationale>... cite passages as [1], [2] ...</rationale>
+    <answer>...</answer>
+    
+Question: {question}
+"""
+    return prompt.strip()
 
 
 def parse_answer(raw: str) -> tuple[str, str]:
@@ -112,7 +137,22 @@ def parse_answer(raw: str) -> tuple[str, str]:
 
     Whatever contract you choose here must match what `build_prompt` asks for.
     """
-    raise NotImplementedError("parse_answer is yours — see the concept notes above")
+    try:
+        # choosing the first regex match
+        answer = re.findall(r"<answer>(.*?)</answer>", raw, flags=re.DOTALL)[0].strip()
+        if not answer: return ("", raw) # in case answer tags are present but actual answer is missing
+    except IndexError:
+        log.error("answer parsing failed: %s", raw)
+        return ("", raw)
+
+    try:
+        # choosing the first regex match
+        rationale = re.findall(r"<rationale>(.*?)</rationale>", raw, flags=re.DOTALL)[0].strip()
+    except IndexError:
+        log.error("rationale parse failed: %s", raw)
+        rationale = raw
+        
+    return (answer, rationale)
 
 
 def should_refuse(question: str, docs: list[dict], parsed: tuple[str, str]) -> bool:

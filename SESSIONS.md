@@ -13,6 +13,57 @@ in
 
 ---
 
+## 2026-08-22 (the parser lands, and D14 stops being deferred)
+
+**D14 settled: refusals do not enter the token-F1 denominator.** Option B —
+correctness is reported over non-refused queries, with **refusal rate published
+alongside it** as a per-config number. The reasoning is that the two quantities
+answer different questions and averaging them together destroys both: refusal
+rate is already a headline figure (it is the whole reason D11 kept the refusal
+branch — does worse retrieval make the model *decline* or make it *hallucinate*,
+because only one of those is safe), and a correctness number that silently
+absorbs declines cannot distinguish a model that got the answer wrong from one
+that correctly said it did not know. Option A's single figure was defensible and
+was rejected on the grounds that it conflates two failure profiles the project
+exists to separate. The cost is accepted explicitly: **the denominator now varies
+per configuration**, so any README row quoting correctness must also state the n
+it was computed over, or the column is not comparable across rows.
+
+**The convention has a retrospective consequence, and it is small.** The
+gold-context probe's `mean token-F1 0.711` was computed over 15 questions, one of
+which is the Alceste refusal scoring 0. Under B that query leaves the numerator
+and the denominator both: **0.7619 over 14, with a 6.7% refusal rate reported
+next to it.** That figure lives in `LEARNINGS.md` as a probe result rather than
+as a published claim, so nothing needs reverting — but it is the first number the
+new convention touches, and it should be quoted the new way from here on.
+
+**`parse_answer` landed, and the prompt went to v1.** The sentinel was briefly
+changed to `__REFUSED__` and changed back: `INSUFFICIENT_CONTEXT` was measured at
+8/8 inside its tags against 5/8, and keeping the model's word distinct from the
+pipeline's `REFUSAL` is what keeps "the model declined" separable from "my rule
+classified this as a decline". The prompt now pins both things it had left
+ambiguous — the sentinel goes *inside* `<answer>`, and a refusal still emits a
+rationale, which is the only reason the Alceste case could be diagnosed as
+question-phrasing rather than missing evidence.
+
+**The parser's real design is its miss contract, and one refactor of it leaked.**
+`("", raw)` exists so `should_refuse` can see text the parser did not recognise —
+a sentinel emitted without tags, for instance. Splitting the answer and rationale
+lookups into independent `try` blocks fixed a good answer being discarded by a
+missing rationale, and simultaneously opened a narrower hole: a rationale that
+*parses* while the answer does not would travel back with the parsed rationale
+instead of `raw`, dropping the sentinel before `should_refuse` ever saw it, and
+`validate()` would then book a correct refusal as parser drift. Closed with an
+early return, and pinned by `test_a_partial_parse_still_returns_raw`.
+
+**A test docstring claimed the wrong regression and mutation-testing caught it.**
+That test was documented as guarding against re-merging the two `try` blocks. Run
+against an actually-merged implementation, it passes — the answer lookup throws
+first, so the merged version returns `("", raw)` correctly. What it really guards
+is the split-without-early-return. The claim was corrected against the run rather
+than against intuition. The suite does catch both bad refactors, but via two
+different tests. Nine tests added, 69 → 78 green.
+
 ## 2026-08-19 (the output contract gets designed, argued with, and measured)
 
 Phase 4a's `build_prompt` landed — hand-written by Betty, reviewed and probed
