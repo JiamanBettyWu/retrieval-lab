@@ -762,3 +762,95 @@ materially more than that has one obvious suspect.
 Method note worth keeping: gold-only context isolates the prompt from retrieval
 completely, and it is milestone 4b's oracle run pointed at a different question.
 The ceiling experiment and the prompt calibration are the same setup.
+
+## 2026-08-22 — the first real batch, where a third of the refusals are the metric working
+
+Fifteen questions, ten retrieved passages each, `qwen3:8b` at temperature 0,
+prompt v1. The first generation that reads real retrieval output rather than
+gold context or a two-passage probe.
+
+```
+generated      : 15
+refused        :  5  (33.3%)
+no short answer:  0
+yes/no answers :  0  (base rate predicts ~1)
+```
+
+**Two caveats the probes left open both closed.** Format adherence held 15/15 at
+roughly 1,200 tokens of context, which the 45/45 result could not speak to — it
+was measured on two-passage prompts. And the yes/no rule, suspected of
+over-firing after a comparison-shaped question came back `yes` against a name,
+did not fire once. Both are n=15 and neither is a strong claim; they are the
+absence of a specific worry, not evidence of a virtue.
+
+**33.3% against 6.7% on gold context looks alarming and mostly is not.** HotpotQA
+answers are supported by two gold passages jointly, so the honest question is
+whether the model refused when the evidence was actually present. Splitting the
+five refusals on how much gold retrieval delivered:
+
+```
+refused with 2/2 gold in context   1     over-refusal
+refused with 1/2 gold in context   4     correctly calibrated
+```
+
+Four of the five declined because the evidence genuinely was not there. That is
+the first direct evidence for the thing the refusal branch exists to measure —
+refusal rate moving with retrieval quality — and it is the safe failure profile.
+
+**The one over-refusal is not a grounding failure, and calling it one would
+corrupt the metric.** For *"In which year was the choreographer for 'Best Foot
+Forward' born?"* both gold passages were retrieved:
+
+```
+[ 2] Best Foot Forward (musical)   <-- GOLD
+[ 9] Gene Kelly                    <-- GOLD
+```
+
+The answer requires linking the musical to its choreographer and then the
+choreographer to a birth year — ranks 2 to 9, seven distractors in between. The
+model's rationale reads *"The passage does not provide information about the
+birth year of the choreographer"*, singular. It did not fail to trust the
+passages; it failed to connect two of them. Retrieval did its job here, so this
+refusal carries no retrieval signal at all, and reading refusal rate as a pure
+retrieval measurement quietly folds multi-hop linking failures into it. At n=15
+that is 1 in 5 of the refusals.
+
+**The opposite failure showed up in the same batch, and it is the more dangerous
+one.** For the Vienna reform-opera question retrieval returned *zero* gold
+passages. The model answered anyway:
+
+```
+rationale: Gluck's reform opera in Vienna, such as "Orfeo ed Euridice" and
+           "Alceste", came before the opera "Romolo ed Ersilia" ... [1], [7]
+answer   : Orfeo ed Euridice          gold: Paride ed Elena
+```
+
+Fluent, cited, wrong. It reasoned off Gluck's biography page — a passage
+genuinely in context, which is why the grounding rule did not fire — and
+produced an answer the passages do not support. A correctness-only metric scores
+this 0 and reads it as a weak generator, when what happened is a retriever that
+missed both gold documents and a model that filled the gap from an adjacent
+page. The distinction only exists because refusal is measured separately, which
+is the argument D14 settled from the other direction.
+
+**What the batch hands to 4c.** Of the ten answered questions, five were produced
+from incomplete evidence:
+
+```
+                full gold   partial   none
+answered (10)       5          4        1
+refused   (5)       1          4        0
+```
+
+Those five are where faithfulness and correctness can disagree, and they are the
+reason a judge is worth building rather than scoring token-F1 alone. The Vienna
+answer is a particularly good fixture case: its citations are specific, so a
+faithfulness judge has something checkable to rule on rather than a vibe.
+
+**Cost note.** The retrieval cache miss over 66,581 documents took about two
+minutes on an M1 Pro with MPS — roughly 720 docs/sec — and the fifteen
+generations a few minutes more. That cache is now on disk and every later Phase 4
+run skips straight to the generator. The generation cache key covers neither
+`--n-queries` nor `--seed`, so this batch's file collides with any later n; the
+post-hoc count check catches it and `--refresh` clears it, but the trial's
+generations do not carry forward. Its deliverables were the two measurements.
