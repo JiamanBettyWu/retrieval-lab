@@ -21,10 +21,15 @@ is 4c and lands in `judge.py`; correctness (token-F1 against HotpotQA's gold
 short answers) is the amended scope decision in `docs/plan.md`.
 
 ────────────────────────────────────────────────────────────────────────────
-STUBS — three functions below raise NotImplementedError and are Betty's:
-    build_prompt()   the RAG prompt, and what PROMPT_VERSION means
-    parse_answer()   splitting a short answer out of a paragraph
+The three functions that decide what this module MEANS, all now written and
+pinned by `tests/test_generate.py`:
+    build_prompt()   the output contract — measured, not asserted (v1)
+    parse_answer()   the seam between a chat model and a scoring metric
     should_refuse()  the refusal gate, which is a measurement not a feature
+They agree on one contract: `<rationale>…</rationale>` then `<answer>…</answer>`,
+with SENTINEL inside the answer tags on a refusal, normalised to REFUSAL by the
+pipeline so `raw` keeps the model's own word. Change any one of them and the
+other two are load-bearing on the change — the tests exist to say so out loud.
 Everything else (cache, sampling, transport, sanity checks) is wired.
 ────────────────────────────────────────────────────────────────────────────
 """
@@ -52,6 +57,7 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 PROMPT_VERSION = "v1"
 
 REFUSAL = "__REFUSED__"
+SENTINEL = "INSUFFICIENT_CONTEXT"
 
 
 @dataclass
@@ -109,7 +115,7 @@ Answer the question using ONLY the passages below. Cite passage as [1], [2].
 Passages:\n{passages}
 
 Rules:
-    - Only answer if the passages fully support it. Otherwise, output <answer>INSUFFICIENT_CONTEXT</answer> with rationale.
+    - Only answer if the passages fully support it. Otherwise, output <answer>{SENTINEL}</answer> with rationale.
     - Each answer should be a few words. 
     - If the question just needs a yes or no answer, answer it with only yes/no . 
 
@@ -155,7 +161,7 @@ def parse_answer(raw: str) -> tuple[str, str]:
     return (answer, rationale)
 
 
-def should_refuse(question: str, docs: list[dict], parsed: tuple[str, str]) -> bool:
+def should_refuse(parsed: tuple[str, str]) -> bool:
     """Decide whether this counts as a refusal.
 
     CONCEPT — the refusal gate is a MEASUREMENT, not a feature (D11 killed the
@@ -173,9 +179,21 @@ def should_refuse(question: str, docs: list[dict], parsed: tuple[str, str]) -> b
     They measure different things and are not interchangeable. Pick one on
     purpose, and say which in the README row.
 
-    `parsed` is `parse_answer`'s output, so a model-side gate can key off it.
+    **This is the model-side gate**, which is why `parsed` is the only argument:
+    everything it rules on is in `parse_answer`'s output. A pipeline-side variant
+    could not live here even if it wanted to — it gates on retrieval scores, and
+    `context_for` sorts by `results[query_id]` and then hands back only
+    `{title, text}`. That ablation belongs in `generate_one`/`main`, where
+    `results` is still in scope, and it would skip generation entirely rather
+    than classify its output.
     """
-    raise NotImplementedError("should_refuse is yours — see the concept notes above")
+    answer, rationale = parsed
+    if SENTINEL.upper() in answer.upper():
+        return True
+    if not answer and SENTINEL.upper() in rationale.upper():
+        return True
+
+    return False
 
 
 # ─────────────────────── plumbing (wired, working) ───────────────────────
@@ -241,7 +259,7 @@ def generate_one(question: str, doc_ids: list[str], docs: list[dict],
     """Prompt → model → parsed Generation. Traced by Weave when it is live."""
     raw = call_ollama(build_prompt(question, docs), model=model)
     answer, rationale = parse_answer(raw)
-    refused = should_refuse(question, docs, (answer, rationale))
+    refused = should_refuse((answer, rationale))
     return Generation(
         query_id=query_id, question=question, doc_ids=doc_ids, raw=raw,
         answer=REFUSAL if refused else answer, rationale=rationale, refused=refused,

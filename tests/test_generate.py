@@ -2,9 +2,9 @@
 
     pytest tests/test_generate.py
 
-Pins the wiring, plus `parse_answer`'s output contract. `should_refuse` is
-still a stub, and neither it nor `build_prompt` is called from here — the prompt
-is exercised by probes, not fixtures.
+Pins the wiring, plus the contracts of `parse_answer` and `should_refuse`.
+`build_prompt` is not called from here — the prompt is exercised by probes
+against a live model, not by fixtures.
 No model, no Ollama, no download.
 
 The three load-bearing ones are `test_context_comes_from_results_not_qrels` (the
@@ -22,9 +22,11 @@ from retrieval_lab.cache import generation_cache_path, judgement_cache_path
 from retrieval_lab.generate import (
     Generation,
     cached_generations,
+    SENTINEL,
     context_for,
     parse_answer,
     sample_queries,
+    should_refuse,
     validate,
 )
 
@@ -274,3 +276,86 @@ def test_the_first_answer_block_wins():
     raw = "<rationale>r [1]</rationale><answer>AOL</answer> ... <answer>Sesame Street</answer>"
     answer, _ = parse_answer(raw)
     assert answer == "AOL"
+
+
+# ─────────────────────── should_refuse's contract ───────────────────────
+#
+# The gate is MODEL-side: the prompt asks for SENTINEL when the passages do not
+# support an answer, and this function detects it. It therefore measures the
+# model's own calibration, not a threshold anyone chose — a distinction the
+# README row has to state, because a score-threshold gate would produce a
+# differently-meaning number of the same name.
+#
+# As of D14 (2026-08-22) this function drives TWO published numbers, not one:
+# refusal rate, and — because refusals leave the correctness denominator — which
+# queries correctness is computed over at all. A false positive here deletes a
+# scoreable answer from the metric silently.
+
+
+def test_the_sentinel_in_the_answer_is_a_refusal():
+    assert should_refuse((SENTINEL, "the passages do not say [1][2]")) is True
+
+
+def test_a_normal_answer_is_not_a_refusal():
+    assert should_refuse(("Nelson County", "it sits there [1]")) is False
+
+
+def test_a_sentinel_that_lost_its_tags_is_still_a_refusal():
+    """The payoff for `parse_answer`'s `("", raw)` contract.
+
+    When the model emits the sentinel without answer tags the parser cannot
+    return it as an answer — so it hands back `raw`, and this is the only place
+    that looks. Without this branch a genuine refusal is booked as parser drift
+    by `validate()` and vanishes from refusal rate.
+    """
+    raw = f"<rationale>the passages do not say [1]</rationale>\n{SENTINEL}"
+    assert should_refuse(("", raw)) is True
+
+
+def test_an_unparseable_answer_is_not_laundered_into_a_refusal():
+    """The mirror-image error, and the worse one because it is silent.
+
+    Returning True for every empty answer would move parse misses into the
+    refusal column, where `validate()`'s 20% gate cannot see them (it exempts
+    `refused` rows) — so a broken parser would read as a cautious model and
+    nothing would raise. An empty answer with no sentinel anywhere in `raw` is a
+    parse miss, and it must stay one.
+    """
+    assert should_refuse(("", "I'm not sure how to answer that.")) is False
+
+
+def test_a_rationale_that_merely_mentions_the_sentinel_is_not_a_refusal():
+    """LOAD-BEARING. The rationale is consulted ONLY when the answer is empty.
+
+    The prompt hands the model the sentinel string, and models narrate the rules
+    they were given — so a perfectly good answer can arrive alongside a rationale
+    that names SENTINEL in passing. Ungated, that returns True: `generate_one`
+    overwrites a parsed answer with REFUSAL, `validate()` exempts the row,
+    refusal rate inflates, and under D14 the query drops out of the correctness
+    denominator. Two headline numbers move and neither moves informatively.
+
+    Regresses the moment anyone removes the `not answer` gate. Nothing raises.
+    """
+    rationale = (f"If the passages did not cover this I would say {SENTINEL}, "
+                 "but [2] gives it")
+    assert should_refuse(("Nelson County", rationale)) is False
+
+
+def test_sentinel_detection_survives_case_and_trailing_text():
+    """The model may lower-case it or append its reasoning to it. Normalising
+    here is safe precisely because this is classification, not scoring — the
+    place normalisation must NOT happen is `parse_answer`."""
+    assert should_refuse((SENTINEL.lower(), "r [1]")) is True
+    assert should_refuse((f"{SENTINEL} — [2] lacks the link", "r [1]")) is True
+
+
+def test_the_gate_and_the_prompt_use_the_same_sentinel():
+    """SENTINEL is one constant because it appears in two places that must agree.
+
+    Reword the prompt's sentinel without updating the detector and refusal rate
+    drops to 0.0%, which reads as a *result* rather than as a broken gate. This
+    test fails instead.
+    """
+    from retrieval_lab.generate import build_prompt
+    rendered = build_prompt("Q?", [{"title": "T", "text": "x"}])
+    assert SENTINEL in rendered
