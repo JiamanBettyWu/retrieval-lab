@@ -217,6 +217,37 @@ is the natural next chapter of the Phase 2 finding rather than a new topic.
   against 1.0. If oracle-context answers barely beat baseline-context answers,
   **retrieval was never the bottleneck** — and the whole ablation table has been
   optimising the wrong end of the pipeline. Uncomfortable, and worth knowing.
+
+  > **Amended 2026-08-23 — 4b's context is padded, and the ceiling run splits in
+  > two.** Read literally, "generate from the qrel-perfect context" hands the
+  > model HotpotQA's 2 gold docs while every real config gets 10 retrieved
+  > passages. That contrast changes three things at once: whether the evidence is
+  > present (the intended variable), the context length (2 passages against
+  > ~1,200 tokens), and the distractor count (0 against 8–10). "Refuses less with
+  > gold context" would then be indistinguishable from "refuses less with a
+  > short, clean prompt", and the paired design's whole advantage — same queries,
+  > so question difficulty is held constant — would be spent on a comparison that
+  > is confounded on a different axis.
+  >
+  > There is direct reason to care about distractor count specifically: the one
+  > over-refusal in the 15-query trial batch had **both** gold passages in
+  > context, at ranks 2 and 9 with seven distractors between them, and failed to
+  > link them (`LEARNINGS.md` 2026-08-23).
+  >
+  > So 4b runs **two** context builders, reported separately:
+  >   - **gold-padded** — the gold docs, padded to `n_context` with non-gold docs
+  >     from that query's retrieved list. Length and distractor count are held at
+  >     the real configs' values, so only evidence presence varies. **This is the
+  >     one the config comparison is read against.**
+  >   - **gold-only** — the gold docs alone. The true upper bound, and not a
+  >     controlled contrast; quote it as a ceiling, never as the counterfactual.
+  >
+  > The same constraint applies to any later config comparison: hold `n_context`
+  > fixed across configs, or the refusal-rate column measures prompt length.
+  > Note this is 4b's *ceiling* licence to read `qrels` — `oracle.py`'s rule that
+  > an oracle may only reorder what retrieval found still binds everywhere else,
+  > and `context_for` must keep reading `results`.
+
 - **4c · validate the judge before trusting it.** The part that makes this the
   same project rather than a tutorial, in three checks:
   1. **A known-answer fixture** — the analogue of the five-doc `NDCG@10 = 1.0`
