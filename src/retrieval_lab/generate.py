@@ -14,7 +14,8 @@ generator is not, even at temperature 0 (batching, kv-cache layout and
 quantisation all leak in), so two runs of "the same" config differ slightly and
 there is no diff that proves staleness. The key therefore covers everything that
 changes what the model was asked: dataset, retriever, top_k, context size,
-generator, and `prompt_version`. See `cache.generation_cache_path`.
+generator, and `prompt_version` — plus `n_queries` and `seed`, which change
+which questions were asked rather than how. See `cache.generation_cache_path`.
 
 Scope: this module generates. It does not score. Faithfulness/relevance judging
 is 4c and lands in `judge.py`; correctness (token-F1 against HotpotQA's gold
@@ -327,7 +328,8 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
     )
 
     qids = sample_queries(results, qrels, n_queries, seed)
-    path = generation_cache_path(dataset, model, top_k, n_context, generator, PROMPT_VERSION)
+    path = generation_cache_path(dataset, model, top_k, n_context, generator,
+                                 PROMPT_VERSION, n_queries, seed)
 
     def compute():
         gens = []
@@ -341,9 +343,11 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
 
     gens = cached_generations(path, compute, refresh)
 
-    # This one stays post-hoc deliberately: it also fires on a cache HIT whose
-    # file was written under a different --n-queries or --seed, which validate()
-    # cannot see because that batch was valid when it was written.
+    # Post-hoc deliberately. --n-queries and --seed are in the key now, so this
+    # no longer catches a changed flag — it catches a cache HIT whose file was
+    # written when the ELIGIBLE POOL was different (a rebuilt corpus, amended
+    # qrels), which validate() cannot see because that batch was valid when it
+    # was written.
     if len(gens) != len(qids):
         raise AssertionError(
             f"cache holds {len(gens)} answers but this config asks for {len(qids)} "

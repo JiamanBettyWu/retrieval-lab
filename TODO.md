@@ -19,7 +19,7 @@ config, so any README row quoting correctness must state its n.
 
 ```bash
 pytest                                                       # 85 tests, ~8s, no download
-python -m retrieval_lab.generate --n-queries 15              # Phase 4a — cached; --refresh to redo
+python -m retrieval_lab.generate --n-queries 15              # Phase 4a — cached (n and seed are in the key)
 python -m retrieval_lab.evaluate --dataset nfcorpus          # baseline 0.3159 (Phase 1 rerank: 0.3412)
 ```
 
@@ -100,10 +100,6 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
 - ⚠️ **The correctness scorer's normaliser is load-bearing** — standard HotpotQA
   normalisation is worth 0.600 → 0.711 on the gold-context probe. Test it; don't
   eyeball it (see `LEARNINGS.md` 2026-08-19 for what it does and does not fix).
-- ⚠️ **The trial batch's cache file collides with any later `--n-queries`** — the
-  key omits `n_queries` and `seed`, so an n=50 run reads the n=15 file, trips the
-  post-hoc count check, and needs `--refresh` (regenerating all 50). Loud and
-  working as designed; the trial's 15 generations do not carry forward.
 - ⚠️ **The probe scripts live in gitignored `scratchpad/`** (`probe.md`,
   `probe_datasets.py`, `prompt_probe.py`, `sentinel_probe.py`). Safe from a
   reboot, absent from git, and `LEARNINGS.md` cites their numbers — decide whether
@@ -119,8 +115,10 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
 
 ## Pick up here
 
-1. **Author the 4c.1 fixture** from the 15-query batch in
-   `cache/gen__…__ctx10__qwen3-8b__v1.json`, stratified across the profiles it
+1. **Generate ~100 queries**, then author the 4c.1 fixture from a *held-out*
+   draw (a different `--seed`) — both batches can now coexist on disk. n=15 gives
+   a refusal-rate CI 43 points wide and leaves two strata at n=1; paired
+   config comparisons want ~90–120 queries. Stratify the fixture across the profiles it
    already contains (grounded-and-correct, grounded-and-wrong, ungrounded,
    calibrated refusal, over-refusal). This is the gate on D10 and D13 — no judge
    may be chosen without it.

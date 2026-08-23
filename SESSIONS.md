@@ -113,6 +113,24 @@ wrong — which is the case a correctness-only metric misreads as a weak generat
 Numbers, the two case studies and the 4c population table are in `LEARNINGS.md`
 (2026-08-22), recorded there rather than repeated here. Commit `7e39f40`.
 
+**The generation cache key gained `n_queries` and `seed`, decided after the
+handoff.** Sizing the next run raised the question of how big it should be, and
+the numbers settled it: at n=15 refusal rate carries a 95% CI 43 points wide, and
+two of the fixture strata hold a single example each. Paired config comparisons —
+which is what Phase 4 does, on identical queries, the thing `cache.py` exists to
+guarantee — need roughly 90–120 queries to resolve a 15-point gap, against ~263
+per arm unpaired. So the target became ~100 rather than 50, and a held-out
+fixture draw became worth having. That was impossible under the old key: it
+omitted both `n_queries` and `seed`, so one config owned one filename and a
+second draw overwrote the first. The alternatives considered were accepting the
+overlap between fixture and scored set (mildly circular — the fixture selects a
+judge that then scores those same items) and copying files aside by hand
+(provenance by `cp`, which is what the caching discipline exists to prevent).
+The key change retires the collision hazard filed in the handoff instead of
+documenting it. The existing 15-answer file was migrated to the new name rather
+than regenerated, and re-running the same config confirms a cache HIT. Two tests
+added; 85 → 87.
+
 **Raised by that batch and carried forward as D15:** whether the README reports
 refusal rate stratified by gold-passage presence. The 33.3% figure is honest and
 uninformative; the split is informative but reads `qrels`, which is fine for

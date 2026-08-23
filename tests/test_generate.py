@@ -40,7 +40,8 @@ QRELS = {"q1": {"dC": 1, "dZ": 1}, "q2": {"dD": 1}, "q3": {}}
 CORPUS = {d: {"title": d, "text": f"text of {d}"} for d in ["dA", "dB", "dC", "dD", "dZ"]}
 
 KEY = dict(dataset="hotpotqa-distractor-pool", retriever="sentence-transformers/all-MiniLM-L6-v2",
-           top_k=100, n_context=10, generator="qwen3:8b", prompt_version="v0")
+           top_k=100, n_context=10, generator="qwen3:8b", prompt_version="v0",
+           n_queries=50, seed=0)
 
 
 def test_sampling_is_deterministic():
@@ -84,12 +85,18 @@ def test_context_comes_from_results_not_qrels():
     ("top_k", 50),
     ("dataset", "fiqa"),
     ("retriever", "some/finetuned-encoder"),
+    ("n_queries", 15),
+    ("seed", 1),
 ])
 def test_every_key_component_changes_the_cache_path(field, value):
-    """Anything that changes what the model was asked must change the filename.
+    """Anything that changes what the model was asked — or WHICH questions were
+    asked — must change the filename.
 
     Generation is nondeterministic even at temperature 0, so a stale hit cannot
     be caught by re-running and diffing the way a stale retrieval cache can.
+    `n_queries` and `seed` are here because a batch of 15 is not a prefix of a
+    batch of 100; without them one config owns one filename, and drawing a
+    held-out fixture batch overwrites the batch it was meant to validate against.
     """
     assert generation_cache_path(**KEY) != generation_cache_path(**{**KEY, field: value})
 

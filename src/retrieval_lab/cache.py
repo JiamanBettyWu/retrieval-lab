@@ -50,7 +50,8 @@ def cached_retrieval(dataset: str, model_name: str, top_k: int, compute, refresh
 
 
 def generation_cache_path(dataset: str, retriever: str, top_k: int, n_context: int,
-                          generator: str, prompt_version: str) -> Path:
+                          generator: str, prompt_version: str, n_queries: int,
+                          seed: int) -> Path:
     """One file per thing that changes what the generator was asked.
 
     Phase 4 needs a stricter key than retrieval does, for a reason retrieval
@@ -62,11 +63,21 @@ def generation_cache_path(dataset: str, retriever: str, top_k: int, n_context: i
     there is no `--refresh` habit built around it yet. Bump it on every prompt
     edit; that is the entire contract.
 
+    **`n_queries` and `seed` are in the key too**, which the retrieval cache has
+    no equivalent of. They do not change what the model was *asked* — they change
+    *which questions* were asked, and a file holding 15 answers is not a prefix of
+    the file holding 100: `sample_queries` draws a fresh sample per n, so the two
+    sets overlap only by chance. Leaving them out meant one filename per config
+    and therefore one batch on disk at a time, so drawing a held-out fixture batch
+    overwrote the batch being scored. Now every distinct draw is its own file and
+    a fixture set can sit beside the set it validates a judge for.
+
     The judge model IDs are deliberately NOT here — see `judgement_cache_path`.
     """
     slug = lambda s: s.replace("/", "__").replace(":", "-")
     return (CACHE_DIR / f"gen__{dataset}__{slug(retriever)}__top{top_k}"
-                        f"__ctx{n_context}__{slug(generator)}__{prompt_version}.json")
+                        f"__ctx{n_context}__{slug(generator)}__{prompt_version}"
+                        f"__n{n_queries}__seed{seed}.json")
 
 
 def judgement_cache_path(generation_key: str, judge: str, rubric_version: str) -> Path:
