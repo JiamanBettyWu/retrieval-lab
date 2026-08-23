@@ -13,6 +13,62 @@ in
 
 ---
 
+## 2026-08-23 (the refusal gate turns out to be calibrated)
+
+The same working session as the 2026-08-22 entry below — the clock rolled past
+midnight partway through, and the cache-key change recorded there belongs to
+this stretch. Read the two together.
+
+**The n=100 batch replicated everything and resolved the number that looked
+alarming.** Refusal rate 33.3% → 34.0%, parse misses 0/100, yes/no 7/100 against
+a 6.2% base rate. Format adherence at ten passages now stands at 115/115 across
+both batches. The trial's `0/15` yes/no had read like the rule under-firing and
+was simply small-n. The 95% CI narrowed from 43 points to 18, as the sizing
+arithmetic said it would.
+
+**Splitting refusals by gold-passage presence is the actual result** — 9.8% /
+53.7% / 87.5% as retrieval delivers 2, 1 or 0 of HotpotQA's two gold docs, with
+the first two intervals non-overlapping. As retrieval degrades this generator
+declines rather than invents, which is the safe half of the failure space and
+precisely the question D11 kept the refusal branch to answer. Numbers and the
+fixture-supply consequence are in `LEARNINGS.md` (2026-08-23), commit `37b9147`.
+
+**Betty caught a real flaw in how that was framed, and it changed a design.** The
+stratified split was offered here with a confounding caveat: those three buckets
+hold *different* queries, so retrieval quality is entangled with question
+difficulty. Her reply was that generating over the same query sample under an
+oracle-retrieval config and a real one answers the causal question directly —
+which is right, is what `docs/plan.md` already specifies (four retrieval configs
+plus the ceiling over one fixed seeded sample), and makes the split a
+*descriptive* diagnostic rather than the evidence.
+
+Pushing on that surfaced a trap in 4b that would have spent the paired design's
+whole advantage. Read literally, "generate from the qrel-perfect context" hands
+the model HotpotQA's 2 gold docs while every real config gets 10 retrieved
+passages — varying evidence presence, context length and distractor count
+together, so "refuses less with gold context" would be indistinguishable from
+"refuses less with a short, clean prompt". The trial batch's single over-refusal
+is direct reason to care: both gold passages were present, at ranks 2 and 9 with
+seven distractors between them, and the model failed to link them. **4b now runs
+two context builders** — gold-padded to `n_context` with non-gold docs from that
+query's retrieved list (the controlled contrast, and what the config comparison
+is read against) and gold-only (the true ceiling, never quoted as the
+counterfactual). Recorded as a dated amendment on 4b in `docs/plan.md` rather
+than repeated here; commit `85a5db0`.
+
+**Sizing the run was itself decided on numbers rather than habit.** `--n-queries
+50` was a placeholder written before anything had been measured. At n=15 refusal
+rate carries a CI 43 points wide and two fixture strata hold one example each;
+paired config comparisons need roughly 90–120 queries to resolve a 15-point gap
+against ~263 per arm unpaired, because pairing controls query difficulty. Hence
+100. The generation cache key change that made a held-out fixture draw possible
+is described in the 2026-08-22 entry.
+
+**Not started, deliberately:** the judge-candidate pulls. They are pure
+wall-clock, they block D13 and therefore D10, and `ollama list` still holds only
+`qwen3:8b` — which D10 excludes as a judge on self-bias grounds. Worth starting
+before anything else next session.
+
 ## 2026-08-22 (the last three stubs close, and the first real batch runs)
 
 **D14 settled: refusals do not enter the token-F1 denominator.** Option B —

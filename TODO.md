@@ -4,23 +4,25 @@ Forward-looking state. Session history lives in [SESSIONS.md](SESSIONS.md).
 
 ## Current state
 
-**As of 2026-08-22 (latest session):** **Phase 4a is complete and has produced
-its first real numbers.** All three stubs are written and pinned — `build_prompt`
-at `PROMPT_VERSION = "v1"`, `parse_answer`, `should_refuse` — and a 15-query
-batch on real retrieved context held format 15/15 at ten passages, fired the
-yes/no rule 0 times, and refused 33.3% of the time, of which **4 of 5 refusals
-were correctly calibrated to gold passages retrieval had missed**. 85 tests
-green, working tree clean. Findings in `LEARNINGS.md` (2026-08-22); narrative in
-[SESSIONS.md](SESSIONS.md).
+**As of 2026-08-23 (latest session):** **Phase 4a is done and has its first
+result with an interval around it.** A 100-query batch on real retrieved context
+refuses 34.0% of the time `[25.5%, 43.7%]`, and splitting that by how much gold
+retrieval delivered gives **9.8% / 53.7% / 87.5%** for 2 / 1 / 0 gold docs in
+context — monotonic, with the first two intervals non-overlapping. Format
+adherence is 115/115 across both batches and parse misses are 0/100. All three
+stubs are written and pinned; 87 tests green, working tree clean. Two generation
+batches sit on disk (`n15__seed0`, `n100__seed0`). Findings in `LEARNINGS.md`
+(2026-08-23); narrative in [SESSIONS.md](SESSIONS.md).
 
-**D14 is decided (2026-08-22): correctness is reported over non-refused queries,
-with refusal rate published alongside.** The denominator therefore varies per
-config, so any README row quoting correctness must state its n.
+**Settled this session:** D14 (correctness is reported over non-refused queries,
+refusal rate alongside — so any README correctness figure must state its n), and
+4b's context is padded to `n_context` rather than gold-only, amended into
+`docs/plan.md` (2026-08-23).
 
 ```bash
-pytest                                                       # 85 tests, ~8s, no download
-python -m retrieval_lab.generate --n-queries 15              # Phase 4a — cached (n and seed are in the key)
-python -m retrieval_lab.evaluate --dataset nfcorpus          # baseline 0.3159 (Phase 1 rerank: 0.3412)
+pytest                                                       # 87 tests, ~8s, no download
+python -m retrieval_lab.generate --n-queries 100             # Phase 4a — cached (n and seed are in the key)
+python -m retrieval_lab.generate --n-queries 30 --seed 1     # the held-out fixture draw
 ```
 
 ## Working mode (carry this forward)
@@ -69,29 +71,32 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
   slot with numbers. **If C:** D10's "two judges" half is withdrawn and the κ
   section loses its agreement column.
 
-### D15: Does the README report refusal rate stratified by gold-passage presence? (new, 2026-08-22)
-- **Context:** the trial batch's 33.3% refusal rate splits 4 correctly-calibrated
-  (gold missing from context) / 1 over-refusal (both gold present, ranks 2 and 9,
-  model failed the multi-hop link). The flat number is honest and uninformative;
-  the split is the actual finding.
-- **Options:** A) **Flat rate only** — one number per config, no `qrels` needed
-  B) **Stratified** — refusal rate given gold-present vs gold-missing, which
-  separates calibration from multi-hop failure C) **Flat in the table, stratified
-  in prose** — keeps the ablation table one-number-per-cell
-- **Recommendation:** C. The table is a portfolio front door and a two-part cell
-  breaks it; the split earns a paragraph and a `--breakdown`-style flag, which is
-  where Phase 1's per-bucket analysis already lives.
-- **Note:** stratifying reads `qrels`, which is analysis-only — the same licence
-  `oracle.py` has. It must not reach the generation path.
-- **Blocked on:** nothing, but pointless before n is large enough to split.
+### D15: Does the README report refusal rate stratified by gold-passage presence?
+- **Context (measured 2026-08-23, n=100):** the flat 34.0% splits into 9.8% /
+  53.7% / 87.5% for 2 / 1 / 0 gold docs in context, first two CIs non-overlapping.
+  The split is the finding; the flat number hides it.
+- **Caveat that must ship with it:** those are *different queries*, so retrieval
+  quality is confounded with question difficulty. The split is descriptive. The
+  causal claim belongs to the paired multi-config run (4b + the four configs over
+  one fixed sample), where difficulty is held constant by construction.
+- **Options:** A) flat rate only B) stratified in the table C) **flat in the
+  table, stratified in prose behind a `--breakdown`-style flag**
+- **Recommendation:** C — the ablation table is the portfolio front door and a
+  two-part cell breaks it; `rerank.py --breakdown` is the precedent.
+- **Note:** stratifying reads `qrels`, analysis-only — the licence `oracle.py`
+  has. It must not reach the generation path.
+- **Blocked on:** nothing.
 
 ## Needs attention
 
 - ⚠️ **The 4c.1 fixture still does not exist** (`data/labels/` is empty) and it
-  gates D10 and D13. Betty's to author — the material now exists: the 15-query
-  batch is naturally stratified (5 answered on full gold, 4 partial, 1 none, plus
-  4 calibrated refusals and 1 over-refusal). The Vienna case is the best
-  faithfulness item — fluent, cited `[1]`/`[7]`, and wrong.
+  gates D10 and D13. Betty's to author, ~30 hand labels. **Draw it held-out**
+  (`--seed 1`) so the fixture does not select a judge that then scores those same
+  items. Strata to expect, from n=100: 46 answered on full gold, **19 on partial**
+  (where faithfulness is genuinely at stake — the model committed while holding
+  half the chain), 1 on none, 5 over-refusals, 29 calibrated refusals. The
+  answered-with-nothing profile is rare *because* the model refuses 87.5% of the
+  time when it has nothing; build around that rather than wishing for it.
 - ⚠️ **`LEARNINGS.md`'s `mean token-F1 0.711` predates D14** — it averages over 15
   gold-context questions including a refusal. Under the settled convention that
   probe reads **0.7619 over 14, refusal rate 6.7%**. Nothing to revert (a probe
@@ -104,9 +109,13 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
   `probe_datasets.py`, `prompt_probe.py`, `sentinel_probe.py`). Safe from a
   reboot, absent from git, and `LEARNINGS.md` cites their numbers — decide whether
   the ones behind published figures belong in the repo.
+- ⚠️ **No judge candidate has been pulled** — `ollama list` holds only
+  `qwen3:8b`, which D10 excludes as a judge on self-bias grounds. Multi-GB
+  download, pure wall-clock, and it blocks D13 and therefore D10. Start it first.
 - ⚠️ **`README.md` has no Phase 4 row** and still describes the project as
-  three-dataset. Left alone deliberately: 4a's numbers are diagnostics, not
-  ablation-table results.
+  three-dataset. Phase 4a now *has* publishable numbers (the refusal curve), but
+  no config comparison yet, so there is still nothing for the ablation table.
+  What the README says about refusal rate is D15.
 - ⚠️ Carried: **`tests/test_finetune.py` does not exist** but is cited in
   `load_triples`'s docstring — should pin train ∩ dev disjointness, the `n + k`
   guard, and the `--dev-loss` k/batch-size defaults. Also, the contamination
@@ -115,15 +124,10 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
 
 ## Pick up here
 
-1. **Generate ~100 queries**, then author the 4c.1 fixture from a *held-out*
-   draw (a different `--seed`) — both batches can now coexist on disk. n=15 gives
-   a refusal-rate CI 43 points wide and leaves two strata at n=1; paired
-   config comparisons want ~90–120 queries. Stratify the fixture across the profiles it
-   already contains (grounded-and-correct, grounded-and-wrong, ungrounded,
-   calibrated refusal, over-refusal). This is the gate on D10 and D13 — no judge
-   may be chosen without it.
-2. **Start the judge-candidate pulls in the background** (D13). `ollama list`
-   still holds only `qwen3:8b`, which is excluded as a judge; every candidate is
-   a multi-GB download and the bake-off cannot start until one lands.
-3. **Then D13's bake-off** against the fixture — separation *and* throughput —
-   which re-opens D10's second-judge slot with numbers instead of a spec sheet.
+1. **Start a judge-candidate pull in the background** (D13) — non-qwen3, 12–32B
+   (`gemma3:27b`, `mistral-small`). Longest pole, blocks everything downstream.
+2. **Draw the held-out fixture batch** — `--n-queries 30 --seed 1` — and
+   hand-label it. It coexists with `n100__seed0` now that the key covers seed.
+3. **Then D13's bake-off** against the fixture, scoring separation *and*
+   throughput; the throughput number is what should choose the final n for the
+   full config sweep, not a placeholder.
