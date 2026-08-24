@@ -13,6 +13,87 @@ in
 
 ---
 
+## 2026-08-23 (the fixture gets a rubric, and labelling gets a tool)
+
+A later stretch of the same day as the entry below. Phase 4c.1 went from "does
+not exist" to "two sheets on disk, blank, with the rubric written down" — plus
+`src/retrieval_lab/fixture.py` (new, untracked at time of writing) and
+`tests/test_fixture.py` (26 tests; suite now 114).
+
+**`mistral-small` is pulled, so D13 is unblocked.** The pick was made on a disk
+reading that turned out wrong: `df` reported 18GB free mid-session, which ruled
+out a 27B at Q4 (~17GB) and made mistral-small (14GB) look like it would leave
+4GB. After the pull finished the same command reported 48GB free — the low
+readings were taken while the ollama blob cache held partial layers plus temp
+copies. Disk is not a constraint on the bake-off; the recorded reasoning for
+preferring a smaller candidate is, and it still stands on D13's own terms
+(judging is rubric classification, so parameter count may buy little).
+
+**Two draws, because the first one was thin where it mattered.** `--seed 1`
+(n=30) refused 16/30 = 53.3%, against 34.0% at n=100 — not a contradiction, the
+CIs overlap, but it left only **3** answered-on-partial-gold rows, the stratum
+where faithfulness is genuinely at stake. `--seed 2` was drawn for that reason
+and landed 8 more, plus the first two answered-on-*zero*-gold rows the fixture
+has seen. Pooled over 60 rows: 31 answered / 29 refused, which is close to ideal
+class balance for a κ. The refusal rate across three draws of the same config —
+53.3% / 43.3% / 34.0% — is itself worth remembering when reading any single
+small batch. `overlap_with` confirmed no query id is shared with any other
+cached batch, so held-out is a checked fact rather than a property assumed from
+the seed.
+
+**The labels get anchored to the exact text they describe.** Generation is
+nondeterministic even at temperature 0, so a `--refresh` on a batch would leave
+hand labels silently pointing at answers nobody read — well-formed, wrong
+meaning, nothing raising, the same shape as a leaked `corpus_id`. Every sheet
+row therefore carries `raw_sha`, and `load_labels` raises on a mismatch. The
+writer refuses to clobber an existing sheet, and builds every row *before*
+opening the file: the first version truncated on open and left a 0-byte sheet
+when `blank_labels()` raised, which is exactly how `--force` would destroy an
+evening's work and then fail.
+
+**The rubric (D14-adjacent, settled, not a live decision).** Two axes, binary
+both: `grounded` for answered rows, `refusal_ok` for refused ones. Refusals get
+their own axis because a refusal makes no claims and is therefore trivially
+"grounded" — scoring it there would have turned 29 of 60 rows into free
+agreement that measures nothing. Each row's inapplicable axis is pre-filled
+`"n/a"` from the `refused` flag, so there is exactly one decision per row and
+those rows leave that axis's κ denominator rather than counting as agreement.
+
+The boundaries were written *before* row 1, because one invented at row 40 makes
+rows 1–39 a different rubric and the κ silently mixes two scales. `grounded` is
+strict: every clause supported by the passages it cites, so both probe cases in
+LEARNINGS.md are `false` — the 7th Sea decorative citation, and the harder
+Vienna case (reasoned from Gluck's biography page, genuinely in context, toward
+a conclusion that passage does not establish). `refusal_ok` is `false` only when
+the rationale itself names the answer correctly and the model refused anyway.
+**That test is deliberately narrow and makes the axis conservative** — a refusal
+whose rationale never names the answer scores `true` even if the answer was
+derivable — so any over-refusal rate it produces is a LOWER BOUND and the README
+must say so. It buys rater agreement ("does the rationale name it" is checkable)
+at the cost of undercounting.
+
+**Labelling got a tool, for a boring reason and a non-boring one.** Boring:
+hand-editing 6,000-character JSONL lines sixty times is how a row gets corrupted
+at 11pm. `--label` renders one row wrapped, asks the single question that row
+needs, and writes back atomically after *every* answer, skipping rows already
+decided so it resumes. Non-boring: the prompt renders the full polarity sentence
+above the y/n, because inverted labels are the one corruption channel no checker
+can close — they are in-vocabulary and internally consistent, so `--check`
+passes, κ computes, and the number is simply wrong. `render_item` also withholds
+`gold_in_context` until after the answer: seeing a 0 while judging `refusal_ok`
+is anchoring bait that would make the label a function of the qrels rather than
+of the passages.
+
+**Two mistakes worth recording.** The demo of `--label` was run twice, and
+because the tool resumes, the second run labelled row 2 rather than repeating
+row 1 — both trial labels were swept back to blank and the sheets verified at
+30/30 awaiting decisions, but it is a reminder that the tool writes on every
+keystroke by design. And `--label` on a sheet that does not exist yet dies with
+a raw `FileNotFoundError` from `read_text` instead of the "draw it first"
+message `load_generations` gives.
+
+---
+
 ## 2026-08-23 (the refusal gate turns out to be calibrated)
 
 The same working session as the 2026-08-22 entry below — the clock rolled past
