@@ -156,6 +156,17 @@ an already-specialized model would flatten the ablation.
     a genuinely unshaped decision ever needs a D-number again, continue the
     sequence at **D17** — never restart it, since collisions with history are
     silent.
+- **Substantive code changes go through a PR; bookkeeping goes straight to
+  `main`** (adopted 2026-08-23). A new module, a phase, a prompt-version bump,
+  anything that invalidates cached artifacts or changes a published number:
+  branch, PR, `/code-review`, merge. Handoffs, `SESSIONS.md`, `LEARNINGS.md`,
+  `TODO.md` and doc-only edits: commit to `main` directly. **The test is whether
+  a reviewer would have anything to say** — a PR whose entire diff is a journal
+  entry is ceremony, and this repo does not do things it cannot justify.
+  Branches are named `feat/issue-<N>-<slug>` — e.g. `feat/issue-2-judge-bakeoff`
+  — so the branch, its PR and its issue are one thread. Other prefixes (`fix/`,
+  `docs/`) take the same shape; work with no issue behind it drops the
+  `issue-<N>` segment.
 - **`LEARNINGS.md`** = the project devlog. Append findings while they're fresh,
   in the file's existing voice; no need to mark which entries Claude wrote.
 - **`README.md` carries the ablation table** — it's the portfolio front door.
