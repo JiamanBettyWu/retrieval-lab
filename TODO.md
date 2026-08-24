@@ -102,6 +102,9 @@ Only questions **not yet shaped enough to be an issue** live here — see
    the reranker. Note `refusal_ok` is the *slower* axis — confirming an answer
    was not derivable means reading all ten passages, while `grounded` needs only
    the ones actually cited.
-2. **Then the judge bake-off** — issue #2.
-3. **Re-run `n100 seed0` under v2** before any κ is published beside a refusal
-   number (~10 unattended minutes; see the prompt-version flag above, and #3).
+2. **Then the judge bake-off** — bake off `mistral-small` and 2–4 other
+   non-qwen3 candidates against the labelled fixture, scoring separation *and*
+   throughput ([#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2)).
+3. **Re-run `n100 seed0` under v2** (~10 unattended minutes) before any κ is
+   published beside a refusal number — see the prompt-version flag above and
+   [#3](https://github.com/JiamanBettyWu/retrieval-lab/issues/3).

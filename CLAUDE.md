@@ -146,8 +146,10 @@ an already-specialized model would flatten the ablation.
   issue — file it. `TODO.md` keeps only "Current state", "Needs attention",
   "Pick up here", and the genuinely unshaped decisions, because that file is
   injected whole at every session start and must earn its length.
-  - **Read `gh issue list` at session start**; `TODO.md` alone no longer shows
-    the open work.
+  - **"Pick up here" is the entry point.** It names the next concrete actions
+    and links the issue where a step has one, so a session can orient from
+    `TODO.md` alone. Read the linked issue when you reach that step, and
+    `gh issue list` whenever the backlog is what you actually need.
   - **D-numbers are historical.** D1–D16 are referenced by number in
     `docs/plan.md` and `SESSIONS.md`, so migrated decisions keep theirs in the
     issue title (`D13: …`). New issues are referred to by issue number only. If
