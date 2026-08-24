@@ -135,10 +135,25 @@ an already-specialized model would flatten the ablation.
 
 ## Repo conventions
 
-- **`TODO.md`** = forward-looking state (current state, numbered open decisions
-  D1…, next actions), overwritten each session. **`SESSIONS.md`** = append-only
-  dated journal; never edit past entries. Both are refreshed via
-  `/baton:handoff`, which is user-invocable only — ask the user to run it.
+- **`TODO.md`** = forward-looking state (current state, next actions),
+  overwritten each session. **`SESSIONS.md`** = append-only dated journal; never
+  edit past entries. Both are refreshed via `/baton:handoff`, which is
+  user-invocable only — ask the user to run it.
+- **Concrete work lives in GitHub issues, not in `TODO.md`** (adopted
+  2026-08-23). The dividing line: **an issue is a unit of work with a definition
+  of done; an "Open decision" is a question not yet shaped enough to have one.**
+  A decision that has costed options and a recommendation has already become an
+  issue — file it. `TODO.md` keeps only "Current state", "Needs attention",
+  "Pick up here", and the genuinely unshaped decisions, because that file is
+  injected whole at every session start and must earn its length.
+  - **Read `gh issue list` at session start**; `TODO.md` alone no longer shows
+    the open work.
+  - **D-numbers are historical.** D1–D16 are referenced by number in
+    `docs/plan.md` and `SESSIONS.md`, so migrated decisions keep theirs in the
+    issue title (`D13: …`). New issues are referred to by issue number only. If
+    a genuinely unshaped decision ever needs a D-number again, continue the
+    sequence at **D17** — never restart it, since collisions with history are
+    silent.
 - **`LEARNINGS.md`** = the project devlog. Append findings while they're fresh,
   in the file's existing voice; no need to mark which entries Claude wrote.
 - **`README.md` carries the ablation table** — it's the portfolio front door.

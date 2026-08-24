@@ -29,11 +29,12 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
 
 ## Open decisions
 
-### D5: How to handle dense queries, where reranking actively hurts? (parked)
-- **Context:** on the 86 queries with 11+ relevant docs the cross-encoder
-  *subtracts* 1.06 NDCG points while improving MRR. Phase 2 did not dissolve it.
-- **Options:** A) score blending B) routing (needs a detector) C) do nothing.
-  **Recommend A** — but only if you return to retrieval; this is Phase 1 cleanup.
+Only questions **not yet shaped enough to be an issue** live here — see
+`CLAUDE.md`, "Repo conventions". Concrete work is tracked in
+[GitHub issues](https://github.com/JiamanBettyWu/retrieval-lab/issues):
+[#1 (D5) dense queries](https://github.com/JiamanBettyWu/retrieval-lab/issues/1) ·
+[#2 (D13) judge size](https://github.com/JiamanBettyWu/retrieval-lab/issues/2) ·
+[#3 (D15) README stratification](https://github.com/JiamanBettyWu/retrieval-lab/issues/3)
 
 ### D10: Which generator, and which judge? (Phase 4) — **generator settled, judges tentative**
 - **Settled:** generator `qwen3:8b`. Two judges, not one, so their agreement
@@ -44,48 +45,10 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
   `mistral-small` satisfies that.
 - **Amended 2026-08-17:** generations and judgements key separately, so a judge
   swap does not discard generations — pinned in `tests/test_generate.py`.
-- **Blocked on:** the labelled fixture (D16), then D13's bake-off.
-
-### D13: Does the local judge need to be 27B?
-- **Context:** `Qwen3.8-27B` was picked on "bigger is safer", never measured.
-  The principle to test: judging is *classification* against a rubric and all it
-  rules on is in the prompt, so parameter count may buy little.
-- **Unblocked 2026-08-23:** `mistral-small` (14GB) pulled; disk is not a
-  constraint (SESSIONS.md 2026-08-23).
-- **Options:** A) keep a 27B, unmeasured B) **bake off 3–5 candidates against
-  the fixture** (it is small, so five cost about what one does) C) drop the
-  local judge. **Recommend B** — decide on evidence, not a spec sheet.
-- **Blocked on:** labelled fixture rows (D16).
-- **If B:** score separation *and* throughput; throughput should choose the final
-  n for the config sweep. **If C:** D10 loses its second judge and the κ section
-  loses its agreement column.
-
-### D15: Does the README report refusal rate stratified by gold-passage presence?
-- **Context (measured 2026-08-23, n=100, prompt v1):** the flat 34.0% splits into
-  9.8% / 53.7% / 87.5% for 2 / 1 / 0 gold docs in context, first two CIs
-  non-overlapping. **These are v1 numbers** — see the prompt-version flag below.
-- **Caveat that must ship with it:** those are *different queries*, so retrieval
-  quality is confounded with question difficulty. The split is descriptive; the
-  causal claim belongs to the paired multi-config run (4b).
-- **Options:** A) flat only B) stratified in the table C) **flat in the table,
-  stratified in prose behind a `--breakdown`-style flag. Recommend C** — a
-  two-part cell breaks the ablation table; `rerank.py --breakdown` is precedent.
-
-### D16: How many of the 60 fixture rows get hand-labelled?
-- **Context (v2 draws):** `seed 1` gives 16 answered rows, only 3 on partial
-  gold. `seed 2` adds 17 answered including 8 partial and 2 on zero gold.
-  Pooled: 33 answered / 27 refused, 11 answered-on-partial.
-- **Cost asymmetry:** `refusal_ok` is the *slower* axis — confirming an answer
-  was not derivable means reading all ten passages; `grounded` needs only the
-  passages actually cited.
-- **Options:** A) all 60 B) **label `seed 1` fully, then decide from its
-  `grounded` split** C) all 33 answered rows + a randomly subsampled (recorded
-  seed) share of refusals. **Recommend B** — deciding fixture size on measured
-  class balance is the same discipline as measuring the ceiling before building
-  the reranker.
-- **Blocked on:** labelling `seed 1`.
-- **Mechanics:** to skip rows, delete those lines — `validate_labels` raises on
-  a blank field but only warns on a short sheet, deliberately.
+- **Why this is still a decision and not an issue:** "two judges or one" has no
+  definition of done until the bake-off produces evidence. Shape it into an
+  issue once #2 lands.
+- **Blocked on:** the labelled fixture, then #2.
 
 ## Needs attention
 
@@ -132,10 +95,13 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
 ## Pick up here
 
 1. **Label `seed 1`** — `--label`, then `--check`. Commit the sheet when you
-   stop. Read the `grounded` split before deciding whether `seed 2` is needed
-   (D16).
-2. **Then D13's bake-off** against the fixture, scoring separation *and*
-   throughput; the throughput number should choose the final n for the config
-   sweep, not a placeholder.
+   stop. **Then read the `grounded` split and decide how far to go:** if it comes
+   back near-balanced, `seed 2`'s rows are surplus; if it is lopsided (say 28-2),
+   label `seed 2`'s 17 answered rows next. Deciding fixture size on measured
+   class balance is the same discipline as measuring the ceiling before building
+   the reranker. Note `refusal_ok` is the *slower* axis — confirming an answer
+   was not derivable means reading all ten passages, while `grounded` needs only
+   the ones actually cited.
+2. **Then the judge bake-off** — issue #2.
 3. **Re-run `n100 seed0` under v2** before any κ is published beside a refusal
-   number (~10 unattended minutes; see the prompt-version flag above).
+   number (~10 unattended minutes; see the prompt-version flag above, and #3).
