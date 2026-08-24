@@ -13,6 +13,78 @@ in
 
 ---
 
+## 2026-08-23 (labelling starts, and the prompt turns out to be leaking)
+
+The stretch after the handoff commit `def922d` below — kept as a separate entry
+because that one is already history and this is what happened next. Betty
+started labelling and the fixture immediately paid for itself: two findings came
+out of reading rows by hand that no script was going to surface. Both are
+recorded in `LEARNINGS.md` (2026-08-23); the narrative is here.
+
+**Row 1 taught the polarity lesson the tooling was built to prevent, and then
+taught a better one.** `refusal_ok` was misread as grading the rationale rather
+than the refusal decision — despite the on-screen polarity line existing for
+exactly that reason. Renaming to `refusal_justified` was offered and declined;
+the referent was clear once stated. Worth noting the near-miss: this is the one
+corruption channel no checker can close, since inverted labels are
+in-vocabulary, internally consistent, and pass `--check` cleanly.
+
+The row itself turned out to be the more interesting artifact. It is a refusal
+on *full* gold context where the model misread the passage that answered the
+question, and the reasoning behind calling that a distinct failure mode — not
+conservatism, a comprehension error — is in the LEARNINGS entry. It also sits
+right on the boundary of the over-refusal rule, which is why the rule's
+lower-bound caveat is now written into `fixture.py` rather than remembered.
+
+**The rubric gained a clause it had to be argued into.** "Names the answer
+correctly" needed a referent: correct *by the passages*, not by HotpotQA's gold.
+The two come apart precisely on zero-gold rows, where grading against gold would
+mark the model down for information it never had, and the sheet's blindness to
+the gold answer is what keeps a labeller on the right question. Written into the
+`LABEL_VALUES` block.
+
+**The prompt leak, and the decision it forced.** `Cite passages as [1], [2]` was
+appearing verbatim in rationales; a count across all four batches on disk put it
+at 19/175, concentrated in rows that otherwise cited nothing. Betty fixed
+`build_prompt` (inert template placeholder, citation rule moved into `Rules:`)
+and `PROMPT_VERSION` went to `v2`.
+
+The decision was scope. A version bump invalidates every cached generation and
+therefore every hand label anchored to it, so the choice was: fix now and lose
+three labels, or label an evening under a contaminated prompt and select a judge
+on a generation distribution that was about to be abandoned. Fixing won on the
+grounds that labels are the one artifact in this repo that cannot be
+regenerated, so they should be drawn from the prompt version that will ship.
+**Only `seed 1` and `seed 2` were re-run** — Betty's call, and a good one:
+`n100 seed0` stays v1, its files are intact, `prompt_version` is in the cache
+key, and re-running it later is ten unattended minutes. The standing constraint
+is recorded in `TODO.md`: do not publish a κ from v2 labels beside refusal
+numbers from v1 generations.
+
+Post-fix the leak is 0/60 across both regenerated seeds. Refusal moved 53.3% →
+46.7% on seed 1 and held at 43.3% on seed 2 — noise plus whatever the rewording
+bought, not a result. Pooled strata are 33 answered / 27 refused with 11
+answered-on-partial-gold, so the class balance that motivated the second draw
+survived the regeneration.
+
+**One bug the regeneration exposed.** With v1 and v2 files for the same draw
+both on disk, `overlap_with` started warning that the fixture "overlaps earlier
+batches — held-out is not clean", naming the v1 twin. False positive:
+`sample_queries` keys only on `(n_queries, seed)`, so a prompt bump re-asks the
+same questions by construction. Fixed with `same_draw()`, which compares
+filenames with the `__v<N>__` token removed. The reason it was worth fixing
+immediately rather than noting: a warning that fires on a correct state is one
+you train yourself to scroll past, and the next real overlap scrolls past with
+it.
+
+Also this stretch: `INAPPLICABLE_AXIS` pre-fills each row's non-applicable axis
+from the `refused` flag, so the sheet asks exactly one question per row (60
+decisions rather than 60 decisions plus 60 hand-typed `"n/a"`s), and
+`AXIS_QUESTIONS` renders each axis's full polarity sentence above the prompt.
+Suite is 115 tests. Both sheets sit blank at 30/30 awaiting decisions.
+
+---
+
 ## 2026-08-23 (the fixture gets a rubric, and labelling gets a tool)
 
 A later stretch of the same day as the entry below. Phase 4c.1 went from "does

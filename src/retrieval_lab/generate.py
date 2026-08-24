@@ -24,7 +24,7 @@ short answers) is the amended scope decision in `docs/plan.md`.
 ────────────────────────────────────────────────────────────────────────────
 The three functions that decide what this module MEANS, all now written and
 pinned by `tests/test_generate.py`:
-    build_prompt()   the output contract — measured, not asserted (v1)
+    build_prompt()   the output contract — measured, not asserted (v2)
     parse_answer()   the seam between a chat model and a scoring metric
     should_refuse()  the refusal gate, which is a measurement not a feature
 They agree on one contract: `<rationale>…</rationale>` then `<answer>…</answer>`,
@@ -55,7 +55,7 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 
 # Bump on EVERY prompt edit. It is the only thing standing between a reworded
 # prompt and a cache that silently serves answers to the previous wording.
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 REFUSAL = "__REFUSED__"
 SENTINEL = "INSUFFICIENT_CONTEXT"
@@ -118,10 +118,11 @@ Passages:\n{passages}
 Rules:
     - Only answer if the passages fully support it. Otherwise, output <answer>{SENTINEL}</answer> with rationale.
     - Each answer should be a few words. 
-    - If the question just needs a yes or no answer, answer it with only yes/no . 
+    - If the question just needs a yes or no answer, answer it with only yes/no.
+    - Cite passages as [1], [2] 
 
 Format your reply exactly as:
-    <rationale>... cite passages as [1], [2] ...</rationale>
+    <rationale>...</rationale>
     <answer>...</answer>
     
 Question: {question}

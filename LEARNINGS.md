@@ -928,3 +928,73 @@ evidence for them. What it could not do was carry a claim: a refusal rate of
 fixture strata held a single example. The trial's value was catching whether the
 pipeline worked at all, at ten passages, on real retrieved context — and it did
 that in four minutes.
+
+## 2026-08-23 — the prompt leaks its own instructions, and a refusal that isn't
+
+Two findings, both surfaced by hand-labelling rather than by a script, which is
+itself the argument for hand-labelling before automating the judge.
+
+**A format template is text the model will copy.** `build_prompt` v1 ended with
+
+```
+Format your reply exactly as:
+    <rationale>... cite passages as [1], [2] ...</rationale>
+```
+
+and roughly one rationale in nine came back with `Cite passages as [1], [2]`
+appended verbatim — 19 of 175 generations across four batches. The instruction
+sat *inside* the block the model was told to reproduce "exactly", and it
+complied more literally than intended. Moving the citation rule up into `Rules:`
+— where the length and grounding instructions already lived without ever being
+echoed — took the leak to 0/60 on regeneration. The tell was there all along:
+instructions in `Rules:` are followed, instructions inside the format template
+are *transcribed*.
+
+The reason this is worth more than a formatting note: the leaked string injects
+`[1], [2]` into rationales that cited nothing. A faithfulness judge reading such
+a row sees citation-shaped tokens attached to an uncited claim, which is the
+exact confusion 4c exists to resolve. It was a contaminant on the measurement
+axis, not a cosmetic blemish, and it would have been judged rather than caught.
+
+**Refusals split into two mechanisms, and the gold-stratified curve cannot see
+it.** The first row of the seed-1 fixture asks which of two men worked in both
+film and photography. Passage [2] says of one: "collage, film, video, drawing,
+**photography** and installation". The model's rationale asserts he works "in
+film, but not photography", eliminates him, concludes the other man, notices
+that passage does not support *that*, and refuses.
+
+That is not a context failure. Both gold passages were present and the answer
+was plainly derivable; the model misread one and refused as a consequence. The
+refusal curve stratified by gold-in-context (9.8% / 53.7% / 87.5% for 2 / 1 / 0
+gold docs, n=100) would file this row under "2 gold docs, refused" and read it
+as conservatism. It is a comprehension error wearing a refusal's clothes, and
+the two have opposite implications: one says the model knows what it doesn't
+know, the other says it doesn't reliably read what it has been given.
+
+**Refusal rate is noisier across draws than the n=100 CI suggests.** The same
+config, same prompt, differing only in which questions were sampled: 34.0%
+(n=100, v1), 53.3% (n=30 seed 1, v1), 43.3% (n=30 seed 2, v1), 46.7% (n=30
+seed 1, v2). The n=30 intervals are ~20 points wide either side, so none of this
+contradicts the n=100 estimate — but it is a standing caution against reading a
+single small batch's refusal rate as a property of the configuration.
+
+**What the fixture rubric ended up being, and the one thing it cannot count.**
+Two binary axes: `grounded` for answered rows (every clause supported by the
+passages it cites — strict, so an answer that is *factually* right via
+parametric knowledge is still `false`), and `refusal_ok` for refused rows, since
+a refusal makes no claims and would score trivially "grounded" otherwise. The
+over-refusal test is deliberately narrow: `false` only when the rationale itself
+names the answer correctly and the model refused anyway. That is checkable by
+two raters, which is what κ needs — at the cost that a refusal whose rationale
+never names the answer scores `true` even when the answer was derivable. **Any
+over-refusal rate from this axis is therefore a lower bound.** The misread case
+above sits exactly on that boundary and is the reason the caveat is written into
+`fixture.py` rather than remembered.
+
+"Correctly" means what the ten passages *establish* — not what HotpotQA's gold
+says. On a row where retrieval delivered no gold passage the dataset's answer is
+unreachable from the context the model saw, so a refusal there is calibrated
+regardless of an answer existing in the world. And the bar is establish, not
+suggest: the Vienna case's passages point toward an answer without carrying it,
+and reading "points toward" as "was derivable" would convert calibrated refusals
+into over-refusals wholesale.
