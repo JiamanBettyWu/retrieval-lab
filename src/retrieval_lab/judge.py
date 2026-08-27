@@ -467,15 +467,19 @@ def score_candidate(rows: list[dict], js: list[Judgement], judge: str) -> dict:
     """Everything the bake-off table needs about one candidate, as plain numbers."""
     h_g, j_g = align(rows, js, "grounded")
     h_r, j_r = align(rows, js, "refusal_ok")
-    applicable = [j for j in js if any(r["query_id"] == j.query_id for r in rows)]
+    # miss_rate and throughput are properties of the JUDGING RUN, so they read
+    # every ruling in the batch — including rows whose axis is n/a on the sheet.
+    # A candidate that cannot emit the format on refusals is still a candidate
+    # that cannot emit the format. (judge_batch already pins that the batch and
+    # the sheet are the same draw, so no filtering is needed here.)
 
     return {
         "kappa": cohen_kappa(h_g, j_g) if h_g else float("nan"),
         "kappa_refusal": cohen_kappa(h_r, j_r) if h_r else float("nan"),
         "n": len(h_g),
         "n_refusal": len(h_r),
-        "miss_rate": sum(not j.parsed for j in applicable) / max(len(applicable), 1),
-        "sec_per_call": sum(j.seconds for j in applicable) / max(len(applicable), 1),
+        "miss_rate": sum(not j.parsed for j in js) / max(len(js), 1),
+        "sec_per_call": sum(j.seconds for j in js) / max(len(js), 1),
         "digest": next((j.digest for j in js), "?"),
     }
 
