@@ -222,6 +222,12 @@ LABEL_VALUES: dict[str, set] = {
 
 # ─────────────────────── plumbing (wired, working) ───────────────────────
 
+def sheet_path(dataset: str, n_queries: int, seed: int) -> Path:
+    """Where one draw's worksheet lives. One function, because `judge.py` reads
+    these sheets too and a second copy of the format is a second thing to drift."""
+    return LABELS_DIR / f"fixture__{dataset}__n{n_queries}__seed{seed}.jsonl"
+
+
 def raw_sha(raw: str) -> str:
     """Short content hash of a generation's raw text — the label's anchor."""
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
@@ -625,7 +631,7 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          generator: str = GENERATOR) -> None:
     corpus, queries, qrels = load_beir(dataset)
     gens = load_generations(dataset, model, top_k, n_context, generator, n_queries, seed)
-    path = LABELS_DIR / f"fixture__{dataset}__n{n_queries}__seed{seed}.jsonl"
+    path = sheet_path(dataset, n_queries, seed)
 
     if label:
         load_labels(path, gens)     # anchor check BEFORE editing: a sheet whose
