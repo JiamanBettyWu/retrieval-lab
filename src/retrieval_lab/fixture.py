@@ -178,24 +178,46 @@ LABEL_VALUES: dict[str, set] = {
     "refusal_ok": {True, False},
 }
 
-# BETTY — the value sets above are settled; the BOUNDARY is not, and it is the
-# half that actually decides your labels. Binary means every borderline row gets
-# forced to one side, so write down which side BEFORE row 1:
+# THE BOUNDARIES — written down 2026-08-26, after seed 1 was labelled and read
+# back off the sheet. They are recorded here rather than in anyone's head because
+# a boundary that is not written is a boundary that drifts, and drift is
+# unrecoverable without relabelling. `build_judge_prompt` in `judge.py` must
+# mirror these two rules; a judge graded against labels it was given a different
+# rubric for measures rubric disagreement, not judge quality.
 #
-#   grounded    — does `true` require EVERY clause of the rationale to be
-#                 supported by a cited passage, or does it tolerate one unsupported
-#                 aside around a supported core? Your probe found an answer that
-#                 cited [1] for a claim [1] never made; decide now whether that is
-#                 `false` outright or only when the unsupported claim is the answer.
-#   refusal_ok  — `true` = "refusing was the right call given these passages".
-#                 The hard case is already sitting at the top of seed-1: full gold
-#                 in context, the rationale names the right person, then refuses on
-#                 a technicality. Calibrated or over-refusal? Whichever you pick,
-#                 the same rule has to hold for all 60 rows.
+#   grounded — `true` requires EVERY clause of the rationale to be supported by
+#     the passages it cites. Strict, and strict in three specific ways, each of
+#     which appears in seed 1 as a `false`:
+#       - UNCITED ASSERTION. A factual clause carrying no citation at all is
+#         unsupported, even when a passage happens to support it. ("The Mark-8
+#         used the Intel 8008, the Comx-35 the RCA 1802" — both true, neither
+#         cited.) The test is whether a reader could VERIFY the answer from the
+#         citations given, not whether the claim is true.
+#       - INFERENCE PAST THE PASSAGE. A clause the passage makes plausible but
+#         does not establish. ("holy servant of Christ" and an association with
+#         Exeter Cathedral do not establish "saints".)
+#       - UNSUPPORTED NEGATIVE. A denial the passage does not license, including
+#         one drawn from a passage's silence. ("...works in film, but not
+#         photography" — the passage lists photography.)
+#     `grounded` is INDEPENDENT OF CORRECTNESS: rows whose short answer is right
+#     are labelled `false` when the rationale is not verifiable from what it
+#     cites ("yes"; "Edmund Mortimer"). This is the axis the sheet is blinded to
+#     the gold answer to protect.
 #
-# Write the two boundaries here as prose once you have chosen them. This comment
-# is the rubric of record — the thing that makes your labels reproducible by
-# someone who is not you, which is the whole reason κ gets published.
+#   refusal_ok — `true` = "refusing was the right call given these passages",
+#     which is a question about the PASSAGES, not about the model's reasoning.
+#       - `true` when the answer genuinely is not derivable from the context.
+#         (Asked BJ's Wholesale Club's location count, the passages give U.S.
+#         Vision's ~650 and never BJ's own. Not derivable; refusing is correct.)
+#       - `false` when the passages DID support an answer and the model failed to
+#         see it — including refusals turning on the question's exact phrasing.
+#         (Passage [6] establishes Hund's first rule and its importance in
+#         chemistry; refusing because no passage says the words "first rule of
+#         chemistry" is misreading present context, not calibration.)
+#     Note the asymmetry this creates, and it is the reason the axis yields only
+#     a LOWER BOUND on over-refusal: a refusal is scored against what the context
+#     supports, so a `true` here means "not derivable", never "the model was
+#     right to be unsure".
 
 
 # ─────────────────────── plumbing (wired, working) ───────────────────────
