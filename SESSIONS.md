@@ -13,6 +13,145 @@ in
 
 ---
 
+## 2026-08-26 (seed 1 is labelled, and the bake-off gets a harness)
+
+Betty finished labelling `seed 1` and the session turned into three things: a
+fixture-size decision made on measured class balance, a rubric that finally got
+written down in full — then immediately had to be amended — and `judge.py`
+scaffolded on `feat/issue-2-judge-bakeoff`.
+
+**The labels, and the decision they settled.** `--check` passes on all 30 rows,
+committed as `101bb4b` before anything else was touched (the sheets are the one
+input this project cannot rebuild). The splits: `grounded` **10 true / 6 false**
+over 16 answered rows; `refusal_ok` **12 true / 2 false** over 14 refused. Read
+against the strata, the interesting cut is that a third of the *answered* rows
+are ungrounded even where the gold passages were present — 3 of the 6 `false`
+rows are `gold_in_context=2` — and that one of the two `refusal_ok=false` rows
+is also `gold=2`, a refusal with both gold passages in context. That is the
+misreading-present-context mechanism from 2026-08-23 caught a second time.
+
+`TODO.md`'s step 1 said to read the `grounded` split and label `seed 2` if it
+came back lopsided. It came back near-balanced, so as written the rule said
+stop — but the rule's *intent* was class balance, and the axis that actually
+came back lopsided was `refusal_ok`. Both readings were put to Betty with the
+marginal-value math: `seed 2` holds 13 refused rows, which at seed 1's observed
+rate buys roughly **2 more** minority cases, ~4 total, on the *slow* axis (all
+ten passages per row). Four cases cannot certify a judge. **Decision: stop
+labelling** (option a). The bake-off certifies on `grounded`; `refusal_ok`
+agreement is reported as **descriptive only**, carrying the existing lower-bound
+caveat. Deciding fixture size on measured class balance rather than on a target
+n is the same discipline as measuring the ceiling before building the reranker,
+and it is the reason `seed 2` stays blank and unused — which incidentally makes
+it the clean place to run few-shot examples or an adjudication round later,
+since it has never been held out for anything.
+
+**The rubric of record got written, from the sheet rather than from memory**
+(`317db9e`). The `BETTY —` placeholder above `LABEL_VALUES` had asked for the
+two boundaries as prose "once you have chosen them"; they were chosen, so they
+were read back off the labelled rows and recorded. `grounded` is strict in three
+named ways, each tied to the seed-1 row that demonstrates it — uncited assertion
+(the Mark-8/Comx-35 row states both microprocessor facts with no citation at
+all), inference past the passage (Ælfgifu: "holy servant of Christ" does not
+establish "saints"), unsupported negative (Treleaven: "but not photography",
+where the passage lists photography) — and it is independent of correctness,
+since rows with a *right* short answer are labelled `false` when the rationale
+is not verifiable from what it cites.
+
+**Then the amendment, which is the part worth remembering** (`ce989db`, on the
+feature branch). Two copies of the `refusal_ok` rubric existed and disagreed:
+the prose tests what the **passages** support, while `AXIS_QUESTIONS` — the copy
+actually on screen during labelling — tested whether the **rationale** named an
+answer and refused anyway. They diverge on exactly one case: passages support an
+answer, rationale never names it. Betty chose the passages-based rule, so
+`AXIS_QUESTIONS` was amended to match rather than the reverse, recorded as an
+amendment because seed 1 was labelled under the old wording.
+
+The consequence was checked rather than assumed: 10 of the 12 `refusal_ok=true`
+rows sit in the divergence zone (`gold_in_context >= 1`). All ten rationales say
+some variant of "the passage does not specify", none names an answer, and 9 of
+the 10 are `gold=1` — one hop of a 2-hop question missing by construction, so
+refusal is very likely correct structurally. The single `gold=2` row (BJ's
+Wholesale Club) was read directly: passage [8] gives *U.S. Vision's* ~650
+locations and never BJ's own count, so `true` holds under both rules. Betty also
+reported labelling by reading the rationale first and then skimming the
+passages, not by trusting the rationale alone. **Decision: leave the labels.**
+Re-verifying ten rows means reading a hundred passages to sharpen an axis
+already agreed to be non-certifying; the lower-bound caveat now has a named
+mechanism behind it instead of a hand-wave, which is worth more than the
+relabel. Worth noting `TODO.md` had already framed the axis the passages-based
+way before today — the on-screen text was a cheap approximation that had
+drifted, so the amendment fixes a drift rather than raising the bar.
+
+**One premise had to be pushed back on.** Betty's read was that "LLMs would
+definitely do a better job than I did" at the refused rows. Half true: a judge
+is more patient and more consistent, which is exactly why one is being built.
+But there is no external ground truth for groundedness — HotpotQA ships gold
+*answers*, not gold groundedness labels — so on this axis the hand labels **are**
+the definition, and "the judge is more correct than the reference" is not a
+modest claim but an incoherent one. The legitimate version of the worry is that
+rater noise *caps* κ, which deserves a README sentence rather than a second
+rater. Related trap recorded for later: after the bake-off, the rows where a
+judge disagrees will be a short and tempting list, but revising seed 1 labels in
+response inflates the κ and voids the certification. Diagnose from them, or
+adjudicate on `seed 2`.
+
+**The candidate slate, which Betty improved.** The opening proposal was four
+models spanning 4B→24B (~17GB of pulls). Betty countered: start with the biggest
+and stop if agreement is high. Half right — starting at the top *is* this repo's
+ceiling discipline (if a big model cannot separate grounded from ungrounded, no
+small one will), but the stopping rule has no branch that ever tests a smaller
+model, which collapses straight into D13's option A, "keep a big judge,
+unmeasured". Two further costs: throughput is half the definition of done and a
+single candidate gives a number with nothing to compare it against; and "bigger
+judges better" is the assumption under test, not a premise, since judging here
+is classification against a rubric with everything it rules on already in the
+prompt.
+
+The synthesis is cheaper than either proposal. **`mistral-small` is already on
+disk and is ~24B at 4-bit — the same capability class the 27B pick was reaching
+for**, so it serves as the ceiling probe for free, and the whole bake-off needed
+one 3.3GB pull (`gemma3:4b`, digest `a2af6cc3eb7f`) as the floor. Every outcome
+has a defined next step: tie → D13 closes with a finding and a ~6x faster judge;
+gap → pull the 8B/14B middle to locate the turn; both fail → escalate to a 27B
+or to D13's option C. Disk decided the shape too — 34GB free meant the 27B plan
+(~34GB) never fit, and `~/.ollama/models` at 18GB is the steady state, not the
+mid-pull artifact 2026-08-23 recorded it as.
+
+**`judge.py`, scaffolded** (`26c6e77`, `1798114`). Plumbing wired end to end: it
+runs from the labelled sheet through model-digest checks to the first stub and
+stops there. Betty's four are `build_judge_prompt`, `parse_judgement`,
+`cohen_kappa` and `rank_candidates`, each with a CONCEPT block. Decisions baked
+into the plumbing before any number exists:
+
+- **`RUBRIC_VERSION`** mirrors `PROMPT_VERSION`'s bump-on-edit contract, and
+  sits in `judgement_cache_path`, so a reworded rubric invalidates judgements
+  without discarding the generations they scored.
+- **Per-call `seconds` is persisted in the judgement row**, not measured at the
+  call site — a cache HIT would otherwise report a slow judge as instant and
+  rank it first, and throughput is what should choose `n` for the config sweep.
+- **Model digests are recorded per judgement.** A tag is not a pin:
+  `mistral-small:latest` can be different weights six months from now with
+  nothing raising, the same silent-staleness shape as a `retrieve.py` edit under
+  a warm cache. This is what keeps a *deleted* loser's number re-derivable once
+  the bake-off is over, which is the same argument that commits `uv.lock`.
+- **The judge reads passages rendered from the corpus, never from the sheet**
+  (`judge_items`). The worksheet carries rendered passages and reusing them
+  would be shorter, but it would make a hand-edited file the judge's source of
+  truth — `load_labels` anchors `raw_sha`, which covers the answer text only.
+  The judge never sees the human label or the stratum either.
+- **The decision rule was fixed before the numbers exist:** on 16 rows a κ gap
+  under ~0.2 is noise, so candidates within that band are tied and ties break on
+  throughput. Otherwise a 0.03 gap picks a judge 6x slower and sets the sweep
+  size for all of Phase 4 by noise.
+- **Parse-miss rate is its own reported column.** Small models fail structured
+  output more often, and a candidate that cannot emit the format is disqualified
+  regardless of its κ — without the column, a 4B with a lovely κ over the 60% of
+  rows it managed to format looks like a winner.
+
+`fixture.sheet_path` was extracted along the way so both modules resolve
+worksheets one way instead of two. 115 tests green throughout.
+
+
 ## 2026-08-23 (labelling starts, and the prompt turns out to be leaking)
 
 The stretch after the handoff commit `def922d` below — kept as a separate entry
