@@ -488,16 +488,24 @@ def report_strata(gens: list[Generation], qrels: dict) -> None:
 # question is rendered in full above the prompt rather than trusting the slug to
 # carry it at 11pm — and it doubles as the rubric being on-screen while labelling.
 #
-# BETTY: these sentences must match the boundaries you write into LABEL_VALUES.
-# If you sharpen one there, sharpen it here — they are the same rubric, and this
-# is the copy you will actually be reading.
+# These sentences MUST match the boundaries recorded above LABEL_VALUES. Sharpen
+# one and you sharpen both — they are the same rubric, and this is the copy that
+# is actually on screen at 11pm.
+#
+# AMENDED 2026-08-26: `refusal_ok` previously read "n = OVER-REFUSAL: the
+# rationale itself names the answer correctly, and it refused anyway", which
+# tests the RATIONALE. The boundary of record tests the PASSAGES, and the two
+# disagree on one case — passages support an answer, rationale never names it.
+# The rationale-based wording scored that `y`; the rule below scores it `n`,
+# because a refusal is over-refusal whether or not the model's own text exposes
+# it. Seed 1 was labelled under the OLD wording (see SESSIONS.md 2026-08-26).
 AXIS_QUESTIONS = {
     "grounded":   "y = EVERY clause is supported by the passages it cites   |   "
                   "n = any clause unsupported, miscited, or reasoned past what "
                   "the passage establishes",
-    "refusal_ok": "y = refusing was the right call on these passages   |   "
-                  "n = OVER-REFUSAL: the rationale itself names the answer "
-                  "correctly, and it refused anyway",
+    "refusal_ok": "y = these passages genuinely do NOT support an answer   |   "
+                  "n = OVER-REFUSAL: they DO support one and it refused anyway "
+                  "(check the passages yourself; the rationale may be wrong)",
 }
 
 
