@@ -13,6 +13,93 @@ in
 
 ---
 
+## 2026-08-27 → 08-28 (the bake-off harness is finished, and the first prompt did not work)
+
+The four stubs in `judge.py` became four implementations, went through
+`/code-review`, and merged as [#4](https://github.com/JiamanBettyWu/retrieval-lab/pull/4)
+(`1a6dbf7`). The session's real content is that the harness was *finished* twice:
+once against tests, and then again against live models, which disagreed.
+
+**The four functions, in the order they were written.** `build_judge_prompt`
+first (Betty's), reviewed before anything else was built on it — the review
+caught that `passages` was interpolated as a Python list (the judge would read
+`['[1] Edmund…', '[2] Roger…']`, quotes and commas included) and, worse, that
+`rationale` was a parameter the function accepted and never used. Both axes rule
+on the rationale, and on a refused row `answer` is only the sentinel, so
+`refusal_ok` was unjudgeable and its κ would have read as "small models cannot
+judge". Then `parse_judgement`, where the seam is that a sloppy parser *guesses*:
+searching for "true" matches "it is not true that every clause is supported". It
+returns `None` for an unrecognised verdict, never a default, because the miss
+rate is both a reported column and a disqualification gate. Then `cohen_kappa`,
+checked against a hand-worked 2×2 (TT=9 TF=1 FT=2 FF=4 → κ = 0.5862) derived on
+paper independently of the code, the same discipline `arithmetic_ceiling()`
+applies to the oracle. Then `rank_candidates`, which is the bake-off's decision
+written as code rather than eyeballed off a table.
+
+**The tag namespace, and why first-match was wrong.** The output contract started
+as the generator's `<answer>`/`<rationale>`, and the FORMAT block spelled out
+`<answer>true</answer> or <answer>false</answer>`. That put a literal verdict in
+the prompt: any judge restating the format before ruling emits a verdict-shaped
+string it never meant, and first-match parsing reads it — a systematic bias
+toward `true`, on exactly the small models whose format compliance the bake-off
+is measuring. Betty proposed `<judge_answer>`, which also makes the judge's
+namespace disjoint from the generator's, so text from the thing being judged can
+never be read as the judgement of it. The parser moved to **last**-match at the
+same time: the verdict follows the rationale, so the final tag is the settled one,
+and a self-correcting judge no longer scores its abandoned answer.
+
+**Two thresholds fixed before the numbers existed.** `MAX_MISS_RATE = 0.10` and
+`KAPPA_TIE_BAND = 0.2`, both as named constants with the arithmetic written into
+the comment. Betty's first instinct on the miss gate was ~3%; the fixture is 30
+rows, so one miss is 3.33 points and a "3%" gate is really zero tolerance — and a
+model whose *true* miss rate is 2% throws at least one miss in 30 draws **45% of
+the time**, disqualifying a usable judge on a coin flip and recording it as a
+finding. At n=30 a 2% model and a 5% model are indistinguishable, so the gate does
+not try: it catches categorical format failure (30–80%), where κ is meaningless
+because the rows a model managed are the *easy* ones and the surviving subset is
+biased, not random. The strictness moved from the gate into the reason line
+instead — the miss count stays visible, because a 4B judge winning on speed with
+3/30 misses implies ~50 retries in a 500-row sweep, which partly offsets the
+throughput advantage that is its whole case.
+
+**`tests/test_judge.py`, and the mutation check.** 42 tests, no model call. Every
+number verified during implementation lived only in scrollback, and this repo
+pins published statistics on principle (`test_rerank.py` exists for that reason).
+Each of the seven known bugs was then reintroduced one at a time to confirm the
+suite goes red — a passing test against broken code is worse than no test. The
+`>=`-vs-`>` boundary at exactly 3/30 = 0.10 is a single character that produces a
+plausible table and silently moves the gate one miss stricter than the comment
+justifying it; only a boundary test finds that.
+
+**Then `/code-review` ran the thing, and it missed on 100% of real calls.** Seven
+findings, all confirmed independently before acting. The one that mattered:
+`gemma3:4b` was *answering the question* instead of grading it. Root cause was
+prompt structure, not the rubric — recorded in `LEARNINGS.md` (2026-08-28) with
+the A/B numbers (0/4 → 4/4) rather than re-narrated here. Fixed in `b4e6b45`,
+which also bumped `RUBRIC_VERSION` to `v2` (nothing had been cached under v1, so
+the bump was free) and added **`--smoke [N]`**: N rows per candidate against live
+models, prints the raws, writes nothing. That flag is the session's actual
+lesson — 42 tests of literals stayed green through a prompt no model could follow,
+and only a live call could have said so. `--bakeoff` was also parsed and never
+read, so a bare invocation had been launching a full multi-model run; an explicit
+action is now required.
+
+**The rubric-of-record correction, which is the one to remember.** `refusal_ok`
+was built from the block *above* `LABEL_VALUES` in `fixture.py` — superseded by
+`ce989db`, which moved the axis onto the passages. `judge.py`'s own docstring
+pointed at the older block, which is how it happened. Betty confirmed she was
+applying the passages rule when labelling; the labels themselves cannot
+adjudicate, since both `refusal_ok=false` rows have rationales that name the
+answer and so satisfy either rule. `grounded` also moved from principle-only
+wording to the three named failure modes from the same block — a strictness
+change, flagged as reversible, and one the README must name when it quotes a κ.
+Mechanism and the general rule in `LEARNINGS.md` (2026-08-28).
+
+**Working mode.** Concept-first held throughout: Betty wrote all four functions
+except `rank_candidates`, which she asked for after reviewing the shape, and the
+`refusal_ok` rubric text. Every bug in this entry was demonstrated by running it
+before it was described.
+
 ## 2026-08-26 (seed 1 is labelled, and the bake-off gets a harness)
 
 Betty finished labelling `seed 1` and the session turned into three things: a

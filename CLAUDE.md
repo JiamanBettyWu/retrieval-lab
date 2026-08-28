@@ -25,6 +25,9 @@ python -m retrieval_lab.fixture --n-queries 30 --seed 1           # Phase 4c.1: 
 python -m retrieval_lab.fixture --n-queries 30 --seed 1 --label   # ... label it (resumable, one row at a time)
 python -m retrieval_lab.fixture --n-queries 30 --seed 1 --check   # ... verify the labels against the batch
 
+python -m retrieval_lab.judge --smoke                             # Phase 4c.2: can the candidates follow the format? (live, writes nothing)
+python -m retrieval_lab.judge --bakeoff                           # ... score every candidate against the labelled fixture
+
 python -m retrieval_lab.finetune --smoke                          # Phase 2: throughput + path check
 python -m retrieval_lab.finetune --tag r16-a32-lr2e5-100k --triples 100000 --k 10000
 ```

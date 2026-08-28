@@ -998,3 +998,34 @@ regardless of an answer existing in the world. And the bar is establish, not
 suggest: the Vienna case's passages point toward an answer without carrying it,
 and reading "points toward" as "was derivable" would convert calibrated refusals
 into over-refusals wholesale.
+
+**A judge prompt can be rubric-perfect and still measure nothing, because
+STRUCTURE decides whether the model grades or answers.** The first judge prompt
+led with the task, then ten long passages, then a tail reading `QUESTION:` /
+`PASSAGES:` / `ANSWER:` / `RATIONALE:` — which is, structurally, the *generator's*
+prompt. `gemma3:4b` did the nearest task it recognised and answered the question:
+`"Rhodesia...true"`, `"Mumbai"`. Parse rate 0/4. Moving the instruction *after*
+the content and adding an explicit "you are a GRADER, do not answer the question
+yourself" took the same model, same rubric, same rows to 4/4; `mistral-small`
+went 0/2 → 4/4 alongside it. Two smaller causes rode along: models copy an `...`
+placeholder into the tag verbatim (`<judge_answer>...false` parses as nothing),
+and they drop closing tags unless asked for them. None of this is visible in a
+unit test — every input there is a literal, and 42 of them stayed green against a
+prompt no model could follow. `--smoke` exists for exactly this: N rows, live
+models, prints the raws, writes nothing.
+
+**Two rubrics of record in one file is a trap the amendment convention creates.**
+`fixture.py` carries the 2026-08-23 rubric above `LABEL_VALUES` and the 2026-08-26
+"THE BOUNDARIES" block below it. They disagree on `refusal_ok` — the older one
+rules on whether the *rationale* names the answer, the newer on whether the
+*passages* support one — and `ce989db` amended `AXIS_QUESTIONS` to the passages
+rule. Keeping the superseded text is deliberate and right (`CLAUDE.md`: a
+reversal should say so rather than overwrite silently), but it means "the rubric
+of record" is no longer answerable by position in the file, and `judge.py`'s
+docstring pointed at the older block. v1 of the judge prompt was built from the
+superseded rule. Nothing raises — a judge graded against labels it was given a
+different rubric for produces a perfectly well-formed κ that measures our own
+edit. Worth noting the seed-1 labels *cannot* adjudicate this: both
+`refusal_ok=false` rows have rationales that name the answer, so they satisfy
+either rule. **When a rubric is amended, the pointer to it has to move in the
+same commit as the amendment.**
