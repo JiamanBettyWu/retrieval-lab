@@ -35,7 +35,8 @@ labelled rows. At that size a κ difference under ~0.2 is noise, so the decision
 rule is "big gap or no gap, then throughput" — not "0.71 beats 0.68". And
 `refusal_ok` (14 rows, 12/2) is reported as DESCRIPTIVE ONLY: two minority cases
 cannot certify anything, which is the measured reason seed 2 was not labelled
-(2026-08-26). Certification reads the `grounded` axis.
+(2026-08-26). Certification reads the `grounded` axis. The third number decided
+in advance is the format gate, `MAX_MISS_RATE` — see its comment below.
 
 **Scope: Ollama transport only.** D10 names Sonnet 5 as the primary judge, and
 certifying it against this same fixture needs an API path rather than
@@ -56,9 +57,12 @@ is wired below.
 ────────────────────────────────────────────────────────────────────────────
 """
 import argparse
+from collections import Counter
 import json
 import logging
+import math
 import time
+import re
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -86,6 +90,43 @@ CANDIDATES = ["mistral-small", "gemma3:4b"]
 # `judgement_cache_path`, so a bump invalidates judgements without touching the
 # generations they scored.
 RUBRIC_VERSION = "v1"
+
+# The format gate for `rank_candidates`, fixed 2026-08-27 BEFORE any candidate
+# was run — same discipline as the κ band above, and for the same reason: a
+# threshold chosen after seeing `gemma3:4b`'s miss rate is a threshold chosen to
+# include or exclude `gemma3:4b`.
+#
+# WHY 10% AND NOT SOMETHING STRICTER, WHICH WAS THE FIRST INSTINCT. The fixture
+# is 30 rows, so one miss is 3.33 points — a "3%" gate is really zero tolerance
+# with nothing expressible between perfect and disqualified. Worse, it fires on
+# noise: a model whose TRUE miss rate is 2% throws at least one miss in 30 draws
+# 45% of the time, so a usable judge gets disqualified on a coin flip and the
+# result gets written down as a finding. At 10% (4+ misses of 30) that same
+# model false-fails 0.3% of the time.
+#
+# WHAT THE GATE IS FOR, which sets where it belongs. At n=30 a 2% model and a 5%
+# model are indistinguishable, so the gate does not try: it catches the
+# categorical failure — a model that cannot emit structured output at all, at
+# 30–80% — where κ is meaningless because the rows it managed are the EASY ones
+# and the surviving subset is biased, not random. Discriminating 0 misses from 3
+# is not something this sample size can do, and a gate that pretends otherwise
+# is measuring its own noise.
+#
+# WHAT IS NOT THROWN AWAY. A miss is a cost, not a disqualification: judging is
+# nondeterministic, so a retry in the full sweep often parses. That cost stays
+# visible — `report` prints the raw count (3/30, not "10.0%", which implies a
+# precision 30 samples do not have) and `rank_candidates` carries it into the
+# winner's reason. If the 4B floor wins on speed with 3 misses, a 500-row sweep
+# eats ~50 retries, which partly offsets the ~6x throughput advantage that is
+# its whole case. That is a finding worth recording, and a hard gate would have
+# flattened it to pass/fail.
+MAX_MISS_RATE = 0.10
+
+# The κ tie band, committed in the module docstring before the numbers existed:
+# on 16 labelled rows a gap under ~0.2 is noise. Named here so `rank_candidates`
+# reads the rule rather than restating it — the two drifting apart is how a
+# decision quietly becomes whatever the code happens to do.
+KAPPA_TIE_BAND = 0.2
 
 # Which axis applies to which row, mirroring fixture.INAPPLICABLE_AXIS. A refusal
 # makes no claims to ground; an answer cannot be an over-refusal. The judge is
@@ -165,7 +206,60 @@ def build_judge_prompt(question: str, passages: list[str], answer: str,
 
     Bump RUBRIC_VERSION whenever you touch this.
     """
-    raise NotImplementedError("Betty's — see the CONCEPT block above")
+    grounded_principle = """The answer's grounded is true if:
+    - EVERY clause of the rationale is supported by the passages it cites. 
+    - Strict by choice: one unsupported clause makes the row false, even if the rest checks out and even if the short answer is correct. 
+    - The test is "could a reader verify this answer from the cited passages", not "is this answer right".
+The answer's grounded is false if:
+    - any clause unsupported, miscited, or reasoned past what the passage establishes."""
+
+    refusal_principle = """The refusal is the right call (true) if:
+    - the passages do not ESTABLISH an answer, so declining was calibrated; OR
+    - the rationale does not itself name the answer — score true even if you
+      judge the answer WAS in fact derivable from the passages. This rule is
+      deliberately narrow and this branch is deliberately generous: only a
+      refusal the model's own text convicts is counted as an over-refusal.
+The refusal is the wrong call (false) if:
+    - it is an OVER REFUSAL, judged by that narrow test: the rationale itself names the answer correctly, and the model refused anyway.
+"CORRECTLY" MEANS: what these ten passages ESTABLISH — not what an external
+gold answer says. If none of the passages is relevant, the gold answer is not reachable from the context of the passages,
+so a refusal there is calibrated regardless of the fact that an answer exists; grading against gold would mark the model
+down for information it never had.
+The bar is ESTABLISH, not SUGGEST: passages that point toward an answer without
+carrying it do not make it derivable, and a refusal there is the right call.
+"""
+    passages = "\n\n".join(passages) 
+
+    grounded_task = """You are judging whether the answer below is GROUNDED in the
+passages — that is, whether its rationale is supported by the passages it cites."""
+
+    refusal_task = """The model below declined to answer. You are judging whether that
+REFUSAL WAS THE RIGHT CALL on these passages."""
+
+    task = grounded_task if axis == 'grounded' else refusal_task
+    principles = grounded_principle if axis == 'grounded' else refusal_principle
+
+    judge_prompt = f"""{task} Follow these principles
+when giving a verdict. Your verdict must be either true or false.
+
+RULES:\n{principles}
+
+FORMAT YOUR REPLY EXACTLY AS:
+    <judge_rationale>...</judge_rationale>
+    <judge_answer>...</judge_answer>
+where <judge_answer> contains only the single word true or false — no
+punctuation, no formatting, no other word.
+
+QUESTION:\n{question}
+
+PASSAGES:\n{passages}
+
+ANSWER:\n{answer}
+
+RATIONALE:\n{rationale}
+    """
+
+    return judge_prompt.strip()
 
 
 def parse_judgement(raw: str) -> object:
@@ -189,8 +283,17 @@ def parse_judgement(raw: str) -> object:
     mapping from whatever word you asked for to True/False is this function's
     real work, and it must be strict: an unrecognised word is `None`, not False.
     """
-    raise NotImplementedError("Betty's — see the CONCEPT block above")
-
+    try:
+        # LAST match, not first: the verdict follows the rationale, so the final
+        # <judge_answer> is the model's settled ruling. First-match would read an
+        # abandoned verdict when a judge self-corrects mid-reply.
+        verdict = re.findall(r"<judge_answer>(.*?)</judge_answer>", raw, flags=re.DOTALL)[-1].strip().lower()
+        if verdict == "true": return True
+        elif verdict == 'false': return False
+        else: return None
+    except IndexError:
+        log.warning("answer parsing failed: %s", raw)
+        return None
 
 def cohen_kappa(rater_a: list, rater_b: list) -> float:
     """Cohen's κ between two raters over the same items, in order.
@@ -230,7 +333,35 @@ def cohen_kappa(rater_a: list, rater_b: list) -> float:
     total disagreement, and the constant-rater case (κ = 0) — that last one is
     the property the whole metric exists for.
     """
-    raise NotImplementedError("Betty's — see the CONCEPT block above")
+
+    assert len(rater_a) == len(rater_b), f"{len(rater_a)} labels vs {len(rater_b)} judgements"
+    n = len(rater_b)
+
+    # No pairable rows: `align` dropped every one, which is what a candidate that
+    # never emitted the format looks like from here. That is an outcome the
+    # bake-off REPORTS (the miss-rate column and MAX_MISS_RATE exist for it), so
+    # it must not take the run down with it — nan, like the p_e == 1 case below,
+    # and `rank_candidates` disqualifies on miss_rate rather than on this number.
+    if n == 0:
+        log.warning("no pairable rows — κ is undefined; check the miss rate")
+        return float("nan")
+
+    p_o = sum([a == b for a, b in zip(rater_a, rater_b)])/n
+
+    a_counts = Counter(rater_a)
+    b_counts = Counter(rater_b)
+    a_counts_n = {key: value/n for key, value in a_counts.items()}
+    b_counts_n = {key: value/n for key, value in b_counts.items()}
+
+    p_e = a_counts_n.get(True, 0)* b_counts_n.get(True, 0) + a_counts_n.get(False, 0) * b_counts_n.get(False, 0)
+
+    if p_e == 1: 
+        log.warning("Both raters agreed on everything.")
+        return float("nan") 
+
+    kappa = (p_o - p_e )/(1-p_e) 
+
+    return kappa
 
 
 def rank_candidates(scored: dict) -> list[tuple]:
@@ -271,7 +402,71 @@ def rank_candidates(scored: dict) -> list[tuple]:
     means the table shows WHY the winner won, which is what a reader of the
     README needs and what "measured, not asserted" means here.
     """
-    raise NotImplementedError("Betty's — see the CONCEPT block above")
+    
+    # THE GATE, first and separate. A disqualified candidate's κ is not low, it
+    # is meaningless: it ruled on whichever rows it managed to format, and models
+    # fail formatting on the HARD rows, so that subset is biased easy. A nan κ
+    # (no pairable rows at all) is the same category, not a low score.
+    disqualified, survivors = [], {}
+    for judge, v in scored.items():
+        if math.isnan(v["kappa"]):
+            disqualified.append(
+                (judge, "disqualified: no pairable rows — κ undefined"))
+        elif v["miss_rate"] > MAX_MISS_RATE:
+            disqualified.append(
+                (judge, f"disqualified: {v['miss_rate']:.0%} of calls did not "
+                        f"parse (gate {MAX_MISS_RATE:.0%})"))
+        else:
+            survivors[judge] = v
+
+    if not survivors:
+        log.warning("every candidate was disqualified — no judge is certified")
+        return disqualified
+
+    # The anchor reads SURVIVORS ONLY. Anchoring on `scored` would let a
+    # disqualified model's inflated κ set the bar the qualified ones are measured
+    # against — the gate would remove it from the ranking while leaving it in
+    # charge of the ranking.
+    best_kappa = max(v["kappa"] for v in survivors.values())
+
+    # Tie against that fixed anchor, never pairwise: "within 0.2 of each other"
+    # is not transitive (0.70 ~ 0.55 ~ 0.40, but 0.70 is not ~ 0.40), and a
+    # non-transitive comparator makes `sorted` order-dependent without raising.
+    tied = [j for j, v in survivors.items()
+            if best_kappa - v["kappa"] <= KAPPA_TIE_BAND]
+    rest = [j for j in survivors if j not in tied]
+
+    ranked = []
+    # Inside the band κ is noise, so throughput decides — lower s/call first.
+    for j in sorted(tied, key=lambda j: survivors[j]["sec_per_call"]):
+        v = survivors[j]
+        if len(survivors) == 1:
+            head = (f"κ {v['kappa']:.2f} over n={v['n']}, the only candidate to "
+                    f"clear the format gate")
+        elif len(tied) == 1:
+            head = (f"κ {v['kappa']:.2f} over n={v['n']}, ahead of every other "
+                    f"candidate by more than {KAPPA_TIE_BAND}")
+        else:
+            head = (f"κ {v['kappa']:.2f} over n={v['n']}, tied with best "
+                    f"({best_kappa:.2f}) within {KAPPA_TIE_BAND} — ranked on "
+                    f"throughput")
+        ranked.append((j, f"{head}; {v['sec_per_call']:.1f} s/call, "
+                          f"{v['miss_rate']:.0%} unparsed"))
+
+    # Outside the band the gap is real, so κ orders them. These are losers; the
+    # ordering is presentation, but it is a stated rule rather than whatever sort
+    # order the dict happened to have.
+    for j in sorted(rest, key=lambda j: survivors[j]["kappa"], reverse=True):
+        v = survivors[j]
+        ranked.append(
+            (j, f"κ {v['kappa']:.2f} over n={v['n']}, more than "
+                f"{KAPPA_TIE_BAND} below best ({best_kappa:.2f}) — not a tie; "
+                f"{v['sec_per_call']:.1f} s/call"))
+
+    # Disqualified always last: a broken model with a flattering κ must never
+    # appear above a working one in the table a reader scans top-down.
+    return ranked + disqualified
+
 
 
 # ─────────────────────── plumbing (wired, working) ───────────────────────
