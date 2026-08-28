@@ -1,5 +1,6 @@
 """Phase 4c.2: bake off judge candidates against the hand-labelled fixture.
 
+    python -m retrieval_lab.judge --smoke                      # can they follow the format?
     python -m retrieval_lab.judge --bakeoff                    # every candidate
     python -m retrieval_lab.judge --bakeoff --judge gemma3:4b  # just one
 
@@ -46,8 +47,9 @@ would gain a branch.
 
 ────────────────────────────────────────────────────────────────────────────
 The four functions that decide what this module MEANS are Betty's:
-    build_judge_prompt()  the rubric, rendered for a model — must MIRROR the
-                          boundaries recorded above LABEL_VALUES in fixture.py
+    build_judge_prompt()  the rubric, rendered for a model — must MIRROR
+                          fixture.py's THE BOUNDARIES block (the one BELOW
+                          LABEL_VALUES; the block above it is superseded)
     parse_judgement()     the seam between a chat model and a κ
     cohen_kappa()         the agreement statistic the README will publish
     rank_candidates()     what "separates grounded from ungrounded" means as a
@@ -89,7 +91,7 @@ CANDIDATES = ["mistral-small", "gemma3:4b"]
 # cache serving judgements made under the previous wording. It is in
 # `judgement_cache_path`, so a bump invalidates judgements without touching the
 # generations they scored.
-RUBRIC_VERSION = "v1"
+RUBRIC_VERSION = "v2"
 
 # The format gate for `rank_candidates`, fixed 2026-08-27 BEFORE any candidate
 # was run — same discipline as the κ band above, and for the same reason: a
@@ -162,23 +164,24 @@ def build_judge_prompt(question: str, passages: list[str], answer: str,
     `NDCG@10 = 0.0000` meaning leaked `corpus_id` — well-formed output, wrong
     meaning, nothing raises.
 
-    So the rubric of record is the comment block above `LABEL_VALUES` in
-    `fixture.py`, and this prompt has to mirror it. Concretely, that block names
-    three specific ways `grounded` is false — uncited assertion, inference past
-    the passage, unsupported negative — and one asymmetry in `refusal_ok` (it
-    rules on what the PASSAGES support, not on whether the model's reasoning
-    looked careful). A judge not told about the uncited-assertion rule will score
-    the Mark-8 row `grounded=true` and be marked wrong for following a rubric it
-    was never given.
+    THE RUBRIC OF RECORD is the "THE BOUNDARIES" block **below** `LABEL_VALUES`
+    in `fixture.py` (written 2026-08-26), NOT the older block above it. The two
+    disagree on `refusal_ok`, and the later one wins: `ce989db` amended
+    `AXIS_QUESTIONS` to "refusal_ok rules on the passages, not the rationale",
+    and `AXIS_QUESTIONS` is the text shown at label time, so it is what the
+    labels actually mean. The superseded block is kept, per repo convention, so
+    the reversal stays visible rather than silent — but reading it as current is
+    a mistake this docstring used to invite, and doing so put the exact
+    rubric-mismatch failure it warns about into this function (v1 -> v2).
 
     Four design decisions live here, and they are yours:
 
-    1. **How much of the rubric to include.** Naming the three failure modes
-       makes the judge stricter and closer to your labels; it also risks teaching
-       it to hunt for those three and miss a fourth. The alternative — state the
-       principle only ("verifiable from the citations given") — tests whether the
-       judge derives the boundary itself. Both are defensible; they measure
-       different things, and the README has to say which one produced the κ.
+    1. **How much of the rubric to include.** Naming the failure modes makes the
+       judge stricter and closer to your labels; it also risks teaching it to
+       hunt for those and miss another. The alternative — state the principle
+       only ("verifiable from the citations given") — tests whether the judge
+       derives the boundary itself. Both are defensible; they measure different
+       things, and the README has to say which one produced the κ.
 
     2. **Whether to show few-shot examples.** Your seed-1 rows contain textbook
        cases of each failure mode. Using them as examples would likely raise κ —
@@ -193,12 +196,23 @@ def build_judge_prompt(question: str, passages: list[str], answer: str,
        the sheet marked `n/a` — but one call for both axes is half the latency,
        and latency is half the definition of done here.
 
-    4. **The output format**, which `parse_judgement` must match exactly. The
-       generator's `<rationale>…</rationale><answer>…</answer>` contract works and
-       is already proven against these models; reusing its shape is a reasonable
-       default. Asking for a rationale BEFORE the verdict is not cosmetic — it
-       gives the model somewhere to do the work, and it gives you something to
-       read when a judgement looks wrong.
+    4. **The output format**, which `parse_judgement` must match exactly. Asking
+       for a rationale BEFORE the verdict is not cosmetic — it gives the model
+       somewhere to do the work, and it gives you something to read when a
+       judgement looks wrong.
+
+    **STRUCTURE IS LOAD-BEARING, and it was measured (2026-08-28).** The v1
+    prompt put the task instruction FIRST, then ten long passages, then a tail
+    reading QUESTION / PASSAGES / ANSWER / RATIONALE — which is the shape of the
+    GENERATOR's own prompt. `gemma3:4b` did the nearest task it recognised and
+    ANSWERED the question instead of grading it ("Rhodesia...true"), parsing 0/4
+    on real rows. Content first with the grader instruction LAST, plus an
+    explicit "do not answer the question yourself", parses 4/4 on those same
+    rows. The example in the format block is also FILLED IN rather than showing
+    `...`: models copy an ellipsis placeholder into the tag verbatim, and
+    `<judge_answer>...false` is unparseable. Both properties are pinned in
+    `tests/test_judge.py`, and `--smoke` re-checks them against a live model,
+    which is the only check that can catch this class of bug.
 
     `passages` arrives pre-rendered as "[1] Title. Text" strings, in the same
     numbering the generator saw, so citations in `rationale` refer to the same
@@ -206,60 +220,77 @@ def build_judge_prompt(question: str, passages: list[str], answer: str,
 
     Bump RUBRIC_VERSION whenever you touch this.
     """
-    grounded_principle = """The answer's grounded is true if:
-    - EVERY clause of the rationale is supported by the passages it cites. 
-    - Strict by choice: one unsupported clause makes the row false, even if the rest checks out and even if the short answer is correct. 
-    - The test is "could a reader verify this answer from the cited passages", not "is this answer right".
-The answer's grounded is false if:
-    - any clause unsupported, miscited, or reasoned past what the passage establishes."""
+    # Mirrors fixture.py's THE BOUNDARIES block. `grounded` reads the RATIONALE
+    # against its own citations; `refusal_ok` reads the PASSAGES and explicitly
+    # NOT the rationale — a model can refuse for a muddled reason on passages
+    # that genuinely support nothing, and that is still a calibrated refusal.
+    RULES = {
+        "grounded": """true  = EVERY clause of the model's rationale is supported by the passages it cites.
+false = any clause is unsupported, miscited, or reasoned past what the passage establishes.
 
-    refusal_principle = """The refusal is the right call (true) if:
-    - the passages do not ESTABLISH an answer, so declining was calibrated; OR
-    - the rationale does not itself name the answer — score true even if you
-      judge the answer WAS in fact derivable from the passages. This rule is
-      deliberately narrow and this branch is deliberately generous: only a
-      refusal the model's own text convicts is counted as an over-refusal.
-The refusal is the wrong call (false) if:
-    - it is an OVER REFUSAL, judged by that narrow test: the rationale itself names the answer correctly, and the model refused anyway.
-"CORRECTLY" MEANS: what these ten passages ESTABLISH — not what an external
-gold answer says. If none of the passages is relevant, the gold answer is not reachable from the context of the passages,
-so a refusal there is calibrated regardless of the fact that an answer exists; grading against gold would mark the model
-down for information it never had.
-The bar is ESTABLISH, not SUGGEST: passages that point toward an answer without
-carrying it do not make it derivable, and a refusal there is the right call.
-"""
-    passages = "\n\n".join(passages) 
+Three specific ways a row is false:
+  - UNCITED ASSERTION. A factual clause carrying no citation is unsupported, even
+    when a passage happens to support it.
+  - INFERENCE PAST THE PASSAGE. A clause the passage makes plausible but does not
+    establish.
+  - UNSUPPORTED NEGATIVE. A denial the passage does not license, including one
+    drawn from a passage's silence.
 
-    grounded_task = """You are judging whether the answer below is GROUNDED in the
-passages — that is, whether its rationale is supported by the passages it cites."""
+This is INDEPENDENT OF CORRECTNESS. A rationale whose short answer is right is
+still false when it is not verifiable from what it cites. Ask "could a reader
+verify this from the citations given", never "is this answer right".""",
+        "refusal_ok": """true  = these passages genuinely do NOT support an answer, so declining was the right call.
+false = OVER-REFUSAL: the passages DO support an answer and the model refused anyway.
 
-    refusal_task = """The model below declined to answer. You are judging whether that
-REFUSAL WAS THE RIGHT CALL on these passages."""
+This is a question about the PASSAGES, not about the model's reasoning. Check the
+passages yourself; the model's rationale may be wrong. A refusal that turns on the
+question's exact phrasing while the passages establish the answer is an
+over-refusal, not calibration.
 
-    task = grounded_task if axis == 'grounded' else refusal_task
-    principles = grounded_principle if axis == 'grounded' else refusal_principle
+Judge only what these passages ESTABLISH — not what you know from elsewhere. If the
+answer exists in the world but is not reachable from these passages, refusing was
+correct. And the bar is ESTABLISH, not SUGGEST: passages that point toward an
+answer without carrying it do not make it derivable.""",
+    }
+    if axis not in RULES:
+        # No silent fallthrough. A renamed or mistyped axis would otherwise be
+        # judged under the other rubric, compute a κ, and raise nothing.
+        raise ValueError(f"unknown axis {axis!r} — expected one of {sorted(RULES)}")
 
-    judge_prompt = f"""{task} Follow these principles
-when giving a verdict. Your verdict must be either true or false.
+    graded = "the model's REFUSAL" if axis == "refusal_ok" else "the model's answer"
+    return f"""Below are a question, the passages a model was given, and what it
+produced. Read all of it, then follow the instructions at the end.
 
-RULES:\n{principles}
+QUESTION:
+{question}
 
-FORMAT YOUR REPLY EXACTLY AS:
-    <judge_rationale>...</judge_rationale>
-    <judge_answer>...</judge_answer>
-where <judge_answer> contains only the single word true or false — no
-punctuation, no formatting, no other word.
+PASSAGES ({len(passages)} in total):
+{chr(10).join(passages)}
 
-QUESTION:\n{question}
+MODEL'S ANSWER:
+{answer}
 
-PASSAGES:\n{passages}
+MODEL'S RATIONALE:
+{rationale}
 
-ANSWER:\n{answer}
+--------------------------------------------------------------------
+YOUR TASK. You are a GRADER. Do NOT answer the question yourself — it is
+already answered above, and your only job is to grade {graded} against one
+rule.
 
-RATIONALE:\n{rationale}
-    """
+Decide whether "{axis}" is true or false for this row:
 
-    return judge_prompt.strip()
+{RULES[axis]}
+
+Reply with exactly two tagged lines and nothing else. Write your own words
+inside the tags; do not copy this template literally.
+
+<judge_rationale>one or two sentences giving your reasoning</judge_rationale>
+<judge_answer>true</judge_answer>
+
+The <judge_answer> tag must contain only the single word true or the single
+word false — no punctuation, no formatting, no other word — and it must be
+closed with </judge_answer>."""
 
 
 def parse_judgement(raw: str) -> object:
@@ -410,8 +441,14 @@ def rank_candidates(scored: dict) -> list[tuple]:
     disqualified, survivors = [], {}
     for judge, v in scored.items():
         if math.isnan(v["kappa"]):
+            # cohen_kappa returns nan for TWO different degeneracies, and the
+            # reason line is what the README quotes. "no pairable rows" printed
+            # for a judge that paired 12 and agreed on all of them is a false
+            # justification for a correct outcome.
+            why = ("no pairable rows" if v["n"] == 0 else
+                   f"both raters constant over n={v['n']}")
             disqualified.append(
-                (judge, "disqualified: no pairable rows — κ undefined"))
+                (judge, f"disqualified: κ undefined — {why}"))
         elif v["miss_rate"] > MAX_MISS_RATE:
             disqualified.append(
                 (judge, f"disqualified: {v['miss_rate']:.0%} of calls did not "
@@ -623,6 +660,16 @@ def judge_batch(judge: str, items: list[dict], generation_key: str,
 
     js = cached_judgements(path, compute, refresh)
 
+    # `ollama_digest`'s whole claim is that re-pulled weights "say so out loud
+    # instead of quietly re-answering the question" — which needs a COMPARISON,
+    # not just a recorded value. Attribution stays correct either way (the row
+    # names the weights that ruled); what this adds is the staleness signal.
+    if js and digest != "?" and js[0].digest not in ("?", digest):
+        log.warning("%s now resolves to %s but these cached rulings were made "
+                    "by %s — the tag moved. Pass --refresh to re-judge, or keep "
+                    "the number and quote the cached digest.",
+                    judge, digest, js[0].digest)
+
     # Post-hoc, like generate's: catches a HIT written when the SHEET was
     # different (rows dropped, a relabelled draw), which validate cannot see
     # because that batch was valid when it was written.
@@ -679,6 +726,39 @@ def score_candidate(rows: list[dict], js: list[Judgement], judge: str) -> dict:
     }
 
 
+def smoke(judges: list[str], items: list[dict], n: int = 4) -> dict:
+    """Can each candidate FOLLOW THE FORMAT? Live models, no cache, no κ.
+
+    This exists because `tests/test_judge.py` cannot answer the question. Every
+    input there is a literal, so the suite proves the parser handles the shapes
+    we thought of — and stayed green through a v1 prompt that missed on 100% of
+    real calls, because `gemma3:4b` answered the question instead of grading it.
+    A prompt defect is only visible against a live model.
+
+    Deliberately does NOT write the cache: a smoke run is for reading raws, and
+    a cached batch from a prompt still being edited is the thing `RUBRIC_VERSION`
+    exists to prevent. Run it after ANY edit to `build_judge_prompt`, before
+    trusting a miss rate.
+    """
+    out = {}
+    for judge in judges:
+        digest = ollama_digest(judge)
+        js = [judge_one(judge, digest, it, it["axis"]) for it in items[:n]]
+        parsed = sum(j.parsed for j in js)
+        out[judge] = parsed / len(js)
+        log.info("\n%s — parsed %d/%d, %.1fs/call", judge, parsed, len(js),
+                 sum(j.seconds for j in js) / len(js))
+        for j in js:
+            flag = "  ok " if j.parsed else "  MISS"
+            log.info("%s %-12s %s", flag, j.axis, repr(j.raw[:100]))
+        if parsed < len(js):
+            log.warning("  %s could not follow the format on %d/%d rows — read "
+                        "the raws above before blaming the model: a prompt that "
+                        "reads like the generator's gets ANSWERED, not obeyed.",
+                        judge, len(js) - parsed, len(js))
+    return out
+
+
 def report(scored: dict) -> None:
     """The bake-off table. Every column is a thing issue #2 asks for."""
     log.info("\n=== Phase 4c.2 judge bake-off (rubric %s) ===", RUBRIC_VERSION)
@@ -701,7 +781,7 @@ def report(scored: dict) -> None:
 
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          judges: list[str], refresh: bool, model: str = BI_ENCODER,
-         generator: str = GENERATOR) -> None:
+         generator: str = GENERATOR, smoke_n: int = 0) -> None:
     corpus, _queries, _qrels = load_beir(dataset)
     gens = load_generations(dataset, model, top_k, n_context, generator,
                             n_queries, seed)
@@ -718,6 +798,13 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
                                            seed).stem
 
     items = judge_items(gens, corpus)
+
+    if smoke_n:
+        smoke(judges, items, smoke_n)
+        log.info("\nSmoke only — nothing cached, no κ. Re-run with --bakeoff "
+                 "once every candidate follows the format.")
+        return
+
     scored = {}
     for judge in judges:
         js = judge_batch(judge, items, generation_key, refresh)
@@ -742,9 +829,20 @@ if __name__ == "__main__":
                    help="candidate model (repeatable); defaults to CANDIDATES")
     p.add_argument("--bakeoff", action="store_true",
                    help="score every candidate and print the comparison table")
+    p.add_argument("--smoke", type=int, nargs="?", const=4, default=0,
+                   metavar="N",
+                   help="judge N rows per candidate (default 4) and print the "
+                        "raws — checks the prompt is followable, writes nothing")
     p.add_argument("--refresh", action="store_true", help="re-judge, ignoring the cache")
     p.add_argument("--model", default=BI_ENCODER, help=MODEL_HELP)
     p.add_argument("--generator", default=GENERATOR)
     args = p.parse_args()
+    # An explicit action is REQUIRED. `--bakeoff` was parsed and never read, so a
+    # bare `python -m retrieval_lab.judge` silently launched a full multi-model
+    # run — minutes of GPU and a cache write nobody asked for.
+    if not (args.bakeoff or args.smoke):
+        p.error("nothing to do — pass --bakeoff to score every candidate, "
+                "or --smoke [N] to check the prompt against a live model first")
     main(args.dataset, args.n_queries, args.n_context, args.top_k, args.seed,
-         args.judges or CANDIDATES, args.refresh, args.model, args.generator)
+         args.judges or CANDIDATES, args.refresh, args.model, args.generator,
+         args.smoke)

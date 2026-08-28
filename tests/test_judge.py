@@ -80,36 +80,93 @@ def test_each_axis_gets_only_its_own_rules():
     grounded = build_judge_prompt(QUESTION, PASSAGES, "Roger", RATIONALE, "grounded")
     refusal = build_judge_prompt(QUESTION, PASSAGES, "I cannot answer",
                                  RATIONALE, "refusal_ok")
-    assert "GROUNDED" in grounded and "OVER REFUSAL" not in grounded
-    assert "OVER REFUSAL" in refusal and "GROUNDED in the" not in refusal
+    assert 'whether "grounded" is' in grounded and "OVER-REFUSAL" not in grounded
+    assert 'whether "refusal_ok" is' in refusal
+    assert "UNCITED ASSERTION" in grounded and "UNCITED ASSERTION" not in refusal
 
 
-def test_refusal_rubric_keeps_the_narrowness_clause():
-    """The conservative boundary, without which κ measures rubric disagreement.
+def test_unknown_axis_raises():
+    """No silent fallthrough to the other rubric.
 
-    `fixture.py` scores a refusal `true` when the rationale does not name the
-    answer EVEN IF the answer was derivable. Drop that from the prompt and the
-    judge convicts on derivability — stricter than the labels it is graded
-    against — and the gap reads as judge quality rather than as our own edit.
+    `axis = grounded if ... else refusal` judged every unrecognised axis under
+    the refusal rule: rename an axis in LABEL_VALUES, or typo one at a call
+    site, and every answered row is graded on over-refusal. κ computes, the
+    table renders, nothing raises — the shape this module is written against.
+    """
+    with pytest.raises(ValueError, match="unknown axis"):
+        build_judge_prompt(QUESTION, PASSAGES, "Roger", RATIONALE, "grounded ")
+
+
+def test_refusal_rubric_rules_on_the_passages_not_the_rationale():
+    """The rubric of record is fixture.py's THE BOUNDARIES block (2026-08-26).
+
+    `ce989db` reversed this axis: refusal_ok asks whether THESE PASSAGES support
+    an answer, and explicitly not whether the model's rationale named one. The
+    superseded block above LABEL_VALUES still states the old rationale-based
+    test, and v1 of this prompt mirrored it — so the judge was graded against
+    labels it was given a different rubric for. Pinned because the two blocks
+    still coexist in fixture.py by design.
     """
     refusal = build_judge_prompt(QUESTION, PASSAGES, "I cannot answer",
                                  RATIONALE, "refusal_ok")
-    assert "derivable" in refusal
+    assert "OVER-REFUSAL" in refusal
+    assert "question about the PASSAGES, not about the model's reasoning" in refusal
     assert "ESTABLISH" in refusal and "SUGGEST" in refusal
+    # the superseded rule, which must NOT be what the judge is told
+    assert "derivable from the passages" not in refusal
 
 
-def test_prompt_contains_no_echoable_verdict():
-    """The FORMAT block must not contain a filled-in `<judge_answer>` tag.
+def test_the_grader_instruction_comes_after_the_content():
+    """Measured 2026-08-28: ordering decides whether the prompt works at all.
 
-    A judge that restates the format before ruling then emits a verdict-shaped
-    string it never meant. Because `parse_judgement` reads the LAST tag this is
-    survivable, but a prompt with a literal verdict in it is one refactor away
-    from a systematic bias toward whichever value was written there.
+    v1 led with the task, then ten long passages, then a tail reading
+    QUESTION / PASSAGES / ANSWER / RATIONALE — the shape of the GENERATOR's own
+    prompt. `gemma3:4b` did the nearest task it recognised and ANSWERED the
+    question ("Rhodesia...true"), parsing 0/4 on real rows; content-first with
+    the instruction last parses 4/4. Nothing about the v1 prompt looked wrong in
+    a log, which is why this is pinned rather than left to review.
     """
     for axis in ("grounded", "refusal_ok"):
         prompt = build_judge_prompt(QUESTION, PASSAGES, "Roger", RATIONALE, axis)
-        assert "<judge_answer>true</judge_answer>" not in prompt
-        assert "<judge_answer>false</judge_answer>" not in prompt
+        assert prompt.index("YOUR TASK") > prompt.index("PASSAGES")
+        assert prompt.index("YOUR TASK") > prompt.index("MODEL'S RATIONALE")
+        assert "You are a GRADER" in prompt
+        assert "Do NOT answer the question yourself" in prompt
+
+
+def test_the_format_example_is_filled_in_not_a_placeholder():
+    """`...` inside the tags is copied verbatim by real models.
+
+    This replaced the opposite pin. v1 showed `<judge_answer>...</judge_answer>`
+    to avoid a literal verdict being echoed, and models emitted
+    `<judge_answer>...false` — unparseable even when the tag closed. The filled
+    example is safe because `parse_judgement` reads the LAST tag, so an echoed
+    template loses to the real verdict that follows it.
+    """
+    for axis in ("grounded", "refusal_ok"):
+        prompt = build_judge_prompt(QUESTION, PASSAGES, "Roger", RATIONALE, axis)
+        assert "<judge_answer>...</judge_answer>" not in prompt
+        assert "<judge_rationale>...</judge_rationale>" not in prompt
+        assert "<judge_answer>true</judge_answer>" in prompt
+        assert "do not copy this template" in prompt
+    # and the echo it makes possible is neutralised by last-match parsing
+    echoed = ("<judge_rationale>one or two sentences</judge_rationale>\n"
+              "<judge_answer>true</judge_answer>\n"
+              "<judge_rationale>Actually unsupported.</judge_rationale>\n"
+              "<judge_answer>false</judge_answer>")
+    assert parse_judgement(echoed) is False
+
+
+def test_passage_count_is_not_hardcoded():
+    """`--n-context` is a flag; "these ten passages" is a lie at any other value.
+
+    It matters most on refusal_ok, where "what the passages ESTABLISH" is the
+    entire test.
+    """
+    five = build_judge_prompt(QUESTION, PASSAGES * 2 + PASSAGES[:1], "x", "y",
+                              "refusal_ok")
+    assert "(5 in total)" in five
+    assert "ten passages" not in five
 
 
 def test_judge_tags_do_not_collide_with_the_generator_s():
@@ -198,7 +255,7 @@ def test_round_trips_the_format_the_prompt_asks_for():
     model failure.
     """
     prompt = build_judge_prompt(QUESTION, PASSAGES, "Roger", RATIONALE, "grounded")
-    assert "<judge_rationale>...</judge_rationale>" in prompt
+    assert "<judge_rationale>" in prompt and "</judge_answer>" in prompt
     reply = "<judge_rationale>Cited [1] supports it.</judge_rationale>\n" \
             "<judge_answer>true</judge_answer>"
     assert parse_judgement(reply) is True
