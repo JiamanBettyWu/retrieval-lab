@@ -8,8 +8,9 @@ Forward-looking state. Session history lives in [SESSIONS.md](SESSIONS.md).
 judge is chosen** — `mistral-small` (digest `8039dd90c113`) at κ 0.586 on
 `grounded`, against `gemma3:4b` at κ −0.257 with a 0% parse-miss rate on both.
 `n100 seed0` was regenerated under generator prompt v2, so every Phase 4 number
-now sits on one generator. Manual follow-ups: [#2] is still open and both losing
-models are still installed. Narrative in [SESSIONS.md](SESSIONS.md); numbers in
+now sits on one generator. [#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2)
+is **closed** with the measured answer, and `README.md` now carries a Phase 4
+section. Manual follow-up: both losing models are still installed. Narrative in [SESSIONS.md](SESSIONS.md); numbers in
 `LEARNINGS.md` (2026-08-28).
 
 ```bash
@@ -70,9 +71,6 @@ Only questions **not yet shaped enough to be an issue** live here — see
   convention — quote it that way, and write the scorer so refusals leave the
   denominator. Its normaliser is load-bearing (0.600 → 0.711): test it, don't
   eyeball it (`LEARNINGS.md` 2026-08-19).
-- ⚠️ **`README.md` has no Phase 4 row** and still describes the project as
-  three-dataset. This is now unblocked — the bake-off gives the table something
-  to say.
 - ⚠️ Carried: **probe scripts live in gitignored `scratchpad/`** while
   `LEARNINGS.md` cites their numbers — decide whether the ones behind published
   figures belong in the repo. And **`tests/test_finetune.py` does not exist**
@@ -82,12 +80,12 @@ Only questions **not yet shaped enough to be an issue** live here — see
 
 ## Pick up here
 
-1. **Close [#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2)** — the
-   measured answer is already posted as a comment; it just needs closing. Then
-   `ollama rm gemma3:4b` (and any other losing candidate) if the disk is wanted
-   back — the winner's digest is recorded in the comment and in `LEARNINGS.md`.
-2. **Add the Phase 4 row to `README.md`** — first Phase 4 number with a
-   comparison behind it. Say which `grounded` wording produced the κ, and mark
-   the over-refusal figure a lower bound (both flagged above).
-3. **Fix `fixture.py`'s stale type case and mark the superseded rubric block** —
+1. **Fix `fixture.py`'s stale type case and mark the superseded rubric block** —
    smallest change on this list and the one most likely to mislead a reader.
+   The current over-refusal type case is the Hund's-rule row (`5ae24b16…`).
+2. **`ollama rm gemma3:4b`** if the disk is wanted back — the winner's digest is
+   recorded in [#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2),
+   `LEARNINGS.md` and `README.md`, so a tag going away costs nothing.
+3. **Decide what a second judge's agreement column is *for*** (D10 above) — a
+   robustness check or a claim. Once answered it becomes an issue and leaves
+   this file.
