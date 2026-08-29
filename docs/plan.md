@@ -103,6 +103,16 @@ query
 Phase 4, and is now an *evaluated* stage rather than a qualitative showcase. The
 `[judge]` stage is new. Reasoning in the amended milestones below.
 
+> **Amended 2026-08-28 — the diagram's model names are wrong, and so are the
+> judge's axes.** `[generate]` is **`qwen3:8b` run locally via Ollama**, not
+> Claude (see the tech-stack amendment below), and it either answers from the
+> top-10 or emits an `INSUFFICIENT_CONTEXT` sentinel. `[judge]` does not score
+> "faithfulness + relevance": relevance was never built, answer-*correctness*
+> was ruled out (2026-08-14, amended 2026-08-17), and the judge rules on **two
+> disjoint binary axes** — `grounded` for answered rows, `refusal_ok` for
+> refused ones. They are disjoint because a refusal makes no claims and would
+> score trivially grounded otherwise.
+
 ### Models — the bi-encoder ≠ cross-encoder trap
 
 They share the `MiniLM-L6` **backbone** but are different model *types* and are
@@ -263,6 +273,45 @@ is the natural next chapter of the Phase 2 finding rather than a new topic.
      measurement.
   3. **Cross-model judging** to dodge self-bias — and *measure* the gap on a
      sample rather than assume it.
+
+  > **Amended 2026-08-28 — how the three checks actually went.**
+  >
+  > **Check 1 (known-answer separability fixture) was never run**, and was
+  > overtaken rather than skipped. Its job was a seconds-fast "can this judge
+  > tell grounded from ungrounded at all" gate built from *synthetic* conditions
+  > (answers from qrel-relevant docs vs from randomly sampled irrelevant ones).
+  > Check 2's hand-labelled fixture answers the same question on **real
+  > generations**, which is strictly harder and strictly more informative: the
+  > synthetic contrast is easy by construction, so passing it would not have
+  > predicted `gemma3:4b`'s failure on real rows. What the plan lost is the
+  > *cheapness* — check 1 was meant to cost seconds, and hand-labelling 30 rows
+  > cost an evening. If a third judge is ever added, build check 1 then.
+  >
+  > **Check 2 ran at n=30, not ~50** — and, because the two axes are disjoint,
+  > the certifying axis is **n=16** (`grounded`; the other 14 rows are refusals
+  > scored on `refusal_ok`). The consequence is exactly what this line worried
+  > about: the winner's bootstrap CI is `[+0.09, +1.00]`, which clears zero and
+  > little else. **This supports a ranking, not a value for κ.** The sizing
+  > heuristic below ("decide by labelling 20 first") was followed in spirit —
+  > seed 1 was labelled, read back, and the rubric sharpened as a result.
+  >
+  > **Check 3 half ran.** Two candidate judges were scored against the human
+  > labels (`mistral-small` κ 0.586, `gemma3:4b` κ −0.257 — issue #2), which
+  > settles *selection* and honours the no-self-bias constraint. The **gap
+  > between two judges was not measured**, because only one judge was kept. That
+  > half is parked as `TODO.md` D10, and the open question there is not "can we"
+  > but "what is a judge–judge agreement column *for*" — as a claim it is weak
+  > (two judges sharing a prompt and rubric can agree and both be wrong, which
+  > `gemma3:4b` demonstrates: perfectly consistent, anti-correlated with truth),
+  > as a diagnostic for routing contested rows to a human it is useful.
+  >
+  > **The unplanned finding, recorded because no check would have caught it.**
+  > Both candidates emitted well-formed, parseable rulings on 30/30 rows and
+  > passed a 4/4 format smoke test; one of them still landed *below chance*.
+  > Parse rate is the cheap monitor one would actually automate and it cannot
+  > separate these two models. Only labels can. Same class as `NDCG@10 = 0.0000`
+  > from leaked `corpus_id`s — well-formed output, wrong meaning, nothing
+  > raises.
 - **Scored axes:** **faithfulness/groundedness** (every claim supported by the
   retrieved passages — needs no external ground truth) and **answer relevance**.
   **Correctness is deliberately excluded**: NFCorpus qrels label *document
@@ -551,6 +600,17 @@ README has to be printed by code someone else can re-run). Hand labels live in
 `data/labels/` and are **committed**, not gitignored — they are the one input
 here that cannot be regenerated.
 
+> **Amended 2026-08-28 — Phase 4 landed as four modules, not two.**
+> `hotpot_pool.py` builds the `hotpotqa-distractor-pool` corpus (the dataset
+> move of 2026-08-17 needed a corpus that did not exist); `generate.py` is as
+> described; **`fixture.py`** draws, labels and verifies the hand-labelling
+> sheet, which the original line folded into `judge.py`; and `judge.py` keeps
+> the judging and the κ calibration (`--smoke`, `--bakeoff`). The split is
+> load-bearing: `fixture.py` owns the *rubric* and the label format, `judge.py`
+> consumes them, and a judge graded against labels it was handed a different
+> rubric for measures rubric disagreement rather than judge quality. The
+> committed-labels rule held — `data/labels/` is tracked.
+
 ## Tech stack
 
 - **`sentence-transformers`** — bi-encoder, cross-encoder, MS MARCO training
@@ -560,9 +620,18 @@ here that cannot be regenerated.
 - **`peft`** — the LoRA adapter on the encoder backbone.
 - **`weave`** — tracing + `weave.Evaluation` (reuse the `observability.py` shim
   from the mise project).
-- **Anthropic Claude** — the Phase 4 answer generator, and a *different* model
+- ~~**Anthropic Claude** — the Phase 4 answer generator, and a *different* model
   as the Phase 4 judge (cross-model, to dodge self-bias — with the gap measured
-  on a sample rather than assumed).
+  on a sample rather than assumed).~~
+  **Amended 2026-08-28 — Phase 4 runs entirely on local models via Ollama.**
+  Generator **`qwen3:8b`**; judge **`mistral-small`** (23.6B, digest
+  `8039dd90c113`), chosen over `gemma3:4b` on the labelled fixture rather than on
+  a spec sheet (issue #2). The cross-model principle survives intact and is
+  *why* the judge is not a qwen3 model — a judge sharing the generator's
+  pretraining corpus is the self-bias this line was written to dodge. What
+  changed is the vendor, not the reasoning: local models keep the phase free,
+  reproducible offline, and pinnable by digest. An API judge (Sonnet 5) is still
+  a live option as a *second* judge; see `TODO.md` D10.
 - ~~**`langgraph`** — Phase 4 only, for the refusal gate's conditional edge.~~
   **Dropped 2026-08-14 (D11-C).** The skill is demonstrated in other projects;
   the refusal gate ships as a plain conditional instead. No orchestration
@@ -615,19 +684,24 @@ here that cannot be regenerated.
   (`TODO.md` D2). If a UI is ever built it is a thin front door over the
   best-*measured* config (Phase 1), and Gradio remains the recommendation.
 
-**Live for Phase 4:**
+~~**Live for Phase 4:**~~ **All three settled 2026-08-28** — kept for the
+reasoning, struck because none is open:
 
-- **Which judge model, and which generator?** They must differ (self-bias), and
-  the judge should be the stronger of the two — a judge that cannot tell
-  grounded from ungrounded fails the 4b fixture and blocks the phase.
-- **How many hand labels?** ~50 is the sketch. Fewer makes κ's confidence
-  interval too wide to publish honestly; more costs an evening. Decide by
-  labelling 20 first and looking at how often the judge and the label disagree.
-- **Does the refusal gate ship?** No longer a framework question (D11 resolved
-  to skip LangGraph — it is a plain conditional now), but still a behaviour
-  change and still worth the check: if NFCorpus answers turn out trivially
-  groundable the gate never fires and refusal rate is a constant column. Read
-  ten generated answers before building it.
+- ~~**Which judge model, and which generator?**~~ **Settled:** generator
+  `qwen3:8b`, judge `mistral-small` (digest `8039dd90c113`), different families
+  so the self-bias constraint holds. The "judge should be the stronger of the
+  two" instinct was right but for an unmeasured reason — see the 4c amendment
+  above; the 4B candidate failed on *discrimination*, not on format.
+- ~~**How many hand labels?**~~ **Settled at 30 (16 on the certifying axis)**,
+  and the worry was justified: CI `[+0.09, +1.00]`. Widening the label set is
+  now the highest-value spend on judge trust, ahead of adding a second judge.
+- ~~**Does the refusal gate ship?**~~ **Yes, and it fires.** The premise is moot
+  twice over: Phase 4 left NFCorpus for `hotpotqa-distractor-pool` (amended
+  2026-08-17), and the gate is not a constant column — refusal rate is 38.0%
+  over n=100 and tracks how much gold retrieval delivered (9.8% / 63.4% / 87.5%
+  at 2 / 1 / 0 gold passages in context). The "read ten answers first" advice
+  was taken and paid for itself: reading them is what found the prompt leak and
+  the misread-context refusal (`LEARNINGS.md` 2026-08-23).
 
 ## Learning resources to line up
 
