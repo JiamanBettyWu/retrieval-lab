@@ -61,14 +61,24 @@ the multi-phase design doc; read it before proposing architectural changes.
 
 Phases: **0** baseline bi-encoder (done) · **1** cross-encoder rerank (done) ·
 **2** LoRA-fine-tune the encoder on MS MARCO, evaluate zero-shot on the untouched
-BEIR set · **3** wiki demo UI · **4** LLM-as-judge generation eval.
+BEIR set (done — it *lost*, and the row stays; see `README.md`) ·
+~~**3** wiki demo UI~~ **retired 2026-08-14** — a demo is not a measurement, and
+generation was promoted to Phase 4 · **4** generation + LLM-as-judge eval
+(in progress: 4a generation and 4c judge validation done, **4b** the gold-padded
+ceiling and **4d** the config comparison next).
 
 ## Architecture
 
 ```
-query → [bi-encoder] cosine top-100 → [cross-encoder] rerank to top-10 → [generate]
-         Phase 0, fine-tuned in P2      Phase 1                           Phase 3
+query → [bi-encoder] cosine top-100 → [cross-encoder] rerank to top-10
+         Phase 0, fine-tuned in P2      Phase 1
+      → [generate] answer or refuse → [judge] grounded / refusal_ok
+         Phase 4a, qwen3:8b              Phase 4c, mistral-small
 ```
+
+Phase 4 runs on **`hotpotqa-distractor-pool`**, not NFCorpus (D12, 2026-08-17):
+NFCorpus queries are terse topic strings rather than answerable questions. Phases
+0–2 are still NFCorpus (plus SciFact and FiQA for the Phase 2 replication).
 
 `data.py` loads BEIR (corpus, queries, **qrels** — the ground-truth labels).
 `retrieve.py` embeds and ranks. `cache.py` persists the result.
