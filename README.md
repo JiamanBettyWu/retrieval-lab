@@ -125,6 +125,12 @@ dataset.** Phase 2 changes the retriever, so it changes what reaches the
 reranker, so the bound moves with it — `0.6263 -> 0.6096`. Reusing the Phase 0
 number would have silently scored Phase 2 against a bound it never had.
 
+**Phase 4 is not in this table, on purpose.** Its columns are retrieval metrics,
+and Phase 4's result is judge–human agreement on hand labels — a different
+measurement with a different denominator, and stacking a κ into an NDCG table
+would imply a comparability that does not exist. Its numbers live in
+[Phase 4](#phase-4--generation-and-a-judge-that-had-to-be-measured-too) below.
+
 **Phase 2 lost, and the row stays.** The project's rule is that every NFCorpus
 number obtained gets reported; a table that only fills in when a phase wins is a
 table you cannot trust when it says a phase won. What the loss turned out to
@@ -548,6 +554,89 @@ Two reading notes so these aren't mistaken for bugs: `NDCG@100` (0.295) sits
 faster than retrieved gain; and **Recall@10 caps at 0.615**, not 1.0, since the
 median query has 16 relevant docs and only 10 slots.
 
+## Phase 4 — generation, and a judge that had to be measured too
+
+The retriever now feeds `qwen3:8b`, which answers from the top 10 passages or
+declines with a sentinel. Scoring those answers needs a judge, and **a judge is
+itself a measuring instrument, so it gets the same treatment every other claim
+in this repo gets**: validated against hand labels before any number it produces
+is believed.
+
+Dataset is `hotpotqa-distractor-pool` rather than NFCorpus — HotpotQA questions
+are 2-hop with exactly two gold passages, so the count that survives retrieval
+into context (`gold_in_context` ∈ {0,1,2}) is a free difficulty stratum.
+
+### Judge validation — the 4B candidate parsed everything and agreed with nothing
+
+30 generations were hand-labelled on two disjoint axes (a refusal makes no
+claims, so scoring it for groundedness would award it a free point): **16
+answered rows** labelled `grounded`, **14 refused rows** labelled `refusal_ok`.
+Two local candidates were then scored against those labels.
+
+| judge | κ `grounded` | n | 95% CI | raw agree | parse-miss | s/call | digest |
+|---|---|---|---|---|---|---|---|
+| **`mistral-small`** (23.6B) | **+0.586** | 16 | [+0.09, +1.00] | 13/16 | **0.0%** | 42.5 | `8039dd90c113` |
+| `gemma3:4b` (4.3B) | **−0.257** | 16 | [−0.67, +0.14] | 5/16 | **0.0%** | 6.8 | `a2af6cc3eb7f` |
+
+CIs are percentile bootstrap (10,000 resamples). The `grounded` rubric is the
+strict one — every clause of the rationale must be supported by the passage it
+cites, so a *factually correct* answer still scores `false` when the citation
+does not carry it. That wording was sharpened in `b4e6b45`; **the κ above was
+produced under the sharpened version**, and reverting it would change what the
+number means.
+
+**The finding is not "bigger is better."** `gemma3:4b` emitted well-formed,
+parseable rulings on **30/30** rows and still landed below chance, ruling `false`
+on 8 of the 11 rows a human labelled `true` — it has the *shape* of a strict
+groundedness judgement without the discrimination. Both candidates had passed the
+format smoke test 4/4 an hour earlier. **Parse rate is the cheap monitor you
+would actually automate, and it cannot tell these two models apart.** Only labels
+can. That is the same class of failure as `NDCG@10 = 0.0000` from leaked
+`corpus_id`s: well-formed output, wrong meaning, nothing raises.
+
+**This is a selection result, not a size result.** The two candidates differ in
+vendor, architecture family and training corpus as well as parameter count — only
+quantization is matched (Q4_K_M). Two points differing on four axes cannot
+attribute the gap to size; that would need two sizes inside one family
+(`gemma3:4b` vs `gemma3:27b`), which was not run. The ranking is secure at n=16;
+the value of κ is not — `[+0.09, +1.00]` clears zero and little else.
+
+Decision and reasoning:
+[#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2).
+
+### Generator behaviour — refusal tracks the evidence it was given
+
+100 questions, prompt v2, temperature 0, split by how much gold retrieval
+actually delivered:
+
+| gold passages in context | queries | refusal rate | 95% CI |
+|---|---|---|---|
+| 2 of 2 | 51 | **9.8%** | [4.3%, 21.0%] |
+| 1 of 2 | 41 | **63.4%** | [48.1%, 76.4%] |
+| 0 of 2 | 8 | **87.5%** | [52.9%, 97.8%] |
+| all | 100 | 38.0% | [29.1%, 47.8%] |
+
+Monotonic, and the full-gold and partial-gold intervals do not overlap: **as
+retrieval degrades this generator declines rather than invents**, which is the
+safe half of the failure space.
+
+**Descriptive, not causal.** The three strata contain *different questions*, so
+"worse retrieval → more refusal" is confounded with "harder question → more
+refusal". Separating them needs the paired design in
+[`docs/plan.md`](docs/plan.md), where the query sample is held fixed across
+retrieval configs.
+
+**Two caveats that belong next to any number from this axis.** First, the
+over-refusal count is a **lower bound**: `refusal_ok` scores a refusal against
+what the passages establish, and the axis has only 2 minority rows, so its κ
+(`mistral-small` 0.632, `gemma3:4b` −0.105, n=14) is reported as **descriptive
+only** — 36% and 43% of bootstrap resamples respectively contain no minority row
+at all. Second, refusals have at least two mechanisms — missing context, and
+*misreading present context* — and this curve cannot separate them. A row where
+both gold passages were present, the rationale names the answer, and the model
+refuses on the question's exact phrasing is filed here as conservatism. It is a
+comprehension failure wearing a refusal's clothes.
+
 ## Layout
 
 ```
@@ -560,10 +649,16 @@ src/retrieval_lab/
 ├── rerank.py         # entrypoint: cross-encoder rerank of the cached candidates (Phase 1)
 ├── finetune.py       # entrypoint: LoRA fine-tune on MS MARCO (Phase 2); --dev-loss scores
 │                     #   any existing model on the dev slice without training
+├── hotpot_pool.py    # entrypoint: build the hotpotqa-distractor-pool corpus (Phase 4)
+├── generate.py       # entrypoint: answer from the top-n context, or refuse (Phase 4a)
+├── fixture.py        # entrypoint: draw, label and verify the hand-labelling sheet (4c.1)
+├── judge.py          # entrypoint: --smoke the format, --bakeoff the candidates (4c.2)
 └── observability.py  # Weave init + @op shim (works with or without weave)
 tests/                # fixture suites, no download required
 docs/plan.md          # the full multi-phase design doc
 ```
 
 Gitignored and rebuildable: `data/` (BEIR downloads) and `cache/` (retrieval
-runs — delete to force a recompute, or pass `--refresh`).
+runs, generation batches and judgements — delete to force a recompute, or pass
+`--refresh`). Hand-written labels under `data/labels/` are **not** rebuildable
+and are the one artifact here that cost human time.
