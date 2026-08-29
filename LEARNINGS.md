@@ -1029,3 +1029,87 @@ edit. Worth noting the seed-1 labels *cannot* adjudicate this: both
 `refusal_ok=false` rows have rationales that name the answer, so they satisfy
 either rule. **When a rubric is amended, the pointer to it has to move in the
 same commit as the amendment.**
+
+## 2026-08-28 — the judge that parsed everything and agreed with nothing
+
+The 4c.2 bake-off ran against the labelled seed-1 fixture under rubric v2. Both
+candidates had cleared `--smoke` 4/4 the same evening, so the format question was
+settled going in and the only open question was agreement.
+
+```
+judge            kappa      n    95% CI          agree    miss%   sec/call
+mistral-small   +0.586     16    [+0.09, +1.00]  13/16    0.0%     42.45
+gemma3:4b       -0.257     16    [-0.67, +0.14]   5/16    0.0%      6.77
+```
+
+**A judge can pass every structural check available and be anti-correlated with
+the truth.** `gemma3:4b` emitted well-formed, parseable rulings on 30/30 rows and
+landed below chance. The error is systematic, not noisy — it ruled `false` on 8
+of the 11 rows labelled `true`:
+
+```
+human -> judge, grounded axis
+  gemma3:4b       TT 2 · FF 3 · TF 8 · FT 3
+  mistral-small   TT 9 · FF 4 · FT 2 · TF 1
+```
+
+It has the shape of a strict groundedness ruling without the discrimination: it
+fails nearly everything, including rationales that are in fact supported. This is
+the same class of finding as the 0.0000 NDCG and the leaked format template —
+well-formed output, wrong meaning, nothing raises — and it is the one that most
+directly threatens 4c, because parse rate is the cheap monitor one would actually
+automate. `--smoke` cannot see it. Only labels can.
+
+**The bake-off does not isolate size, and the write-up must not imply it does.**
+This is the caveat most likely to decay into "size matters" on retelling:
+
+```
+gemma3:4b       family=gemma3  params=4.3B   quant=Q4_K_M   (Google)
+mistral-small   family=llama   params=23.6B  quant=Q4_K_M   (Mistral)
+```
+
+Quantization is matched; vendor, architecture and training corpus are not. Two
+points differing on four axes support a *selection* result — use `mistral-small`,
+digest `8039dd90c113` — and not a causal one. A size ablation needs two sizes
+inside one family (`gemma3:4b` vs `gemma3:27b`) and was not run. The CI on the
+winner, `[+0.09, +1.00]`, clears zero and little else: the ranking is secure at
+n=16, the value of kappa is not.
+
+Worth recording that the issue-body premise was half right. "Judging is
+classification against a rubric, and everything it rules on is in the prompt, so
+parameter count may buy little" — the premise holds and the conclusion does not
+follow. The 4B model had the passages, the rationale and the rule in front of it
+and could not apply them. **What is in the prompt bounds what a judge could know,
+not what it can do with it.**
+
+**The refusal curve moved under generator prompt v2, and only in the middle
+bucket.** `n100 seed0` was regenerated so the whole Phase 4 story sits on one
+generator (the fixture had been v2 since seed 1; the curve was still quoting v1):
+
+```
+                      v1              v2
+overall refusal      34.0%           38.0%   [29.1%, 47.8%]
+  gold 2/2            9.8%            9.8%   [ 4.3%, 21.0%]
+  gold 1/2           53.7%           63.4%   [48.1%, 76.4%]
+  gold 0/2           87.5%           87.5%   [52.9%, 97.8%]
+leaked template     5/100           0/100
+```
+
+Recomputing the v1 batch with the same script reproduces 2026-08-23 exactly
+(34.0%, 9.8 / 53.7 / 87.5), so the shift is the prompt change and not a
+difference in how the curve is computed. The full-gold and zero-gold buckets are
+unchanged row-for-row; only partial gold moved, and its two intervals overlap
+heavily, so **do not claim v2 refuses more** — claim the curve is still monotonic
+and the 2/2 and 1/2 intervals still do not overlap, which is the property the
+separation argument actually needs.
+
+**A worked example can dissolve under regeneration, and the labels notice while
+the prose does not.** `fixture.py` and the 2026-08-23 entry above both name
+seed-1 row 1 (Edmund Mortimer) as the type case for over-refusal. Under v2 that
+row answers rather than refusing — v1 named the answer and then talked itself out
+of it, v2 stops at the answer. The `raw_sha` anchoring did its job and the labels
+invalidated loudly; the *comments* citing that row went stale silently and are
+still stale. Anchoring artefacts is cheap and standard. Anchoring the prose that
+discusses them is neither, and the current type case for over-refusal is the
+Hund's-rule row (`5ae24b16…`, gold 2/2), whose rationale names Friedrich Hund and
+then refuses on the question's exact phrasing.
