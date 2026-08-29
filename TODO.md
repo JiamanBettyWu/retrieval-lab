@@ -4,19 +4,16 @@ Forward-looking state. Session history lives in [SESSIONS.md](SESSIONS.md).
 
 ## Current state
 
-**As of 2026-08-28 (latest session):** **Phase 4c.2 is measured and the local
-judge is chosen** — `mistral-small` (digest `8039dd90c113`) at κ 0.586 on
-`grounded`, against `gemma3:4b` at κ −0.257 with a 0% parse-miss rate on both.
-`n100 seed0` was regenerated under generator prompt v2, so every Phase 4 number
-now sits on one generator. [#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2)
-is **closed** with the measured answer, and `README.md` now carries a Phase 4
-section. Manual follow-up: both losing models are still installed. Narrative in [SESSIONS.md](SESSIONS.md); numbers in
-`LEARNINGS.md` (2026-08-28).
-
-```bash
-pytest                                          # 160 tests, ~8s, no download
-python -m retrieval_lab.judge --bakeoff         # cache HIT now; --refresh to re-judge
-```
+**As of 2026-08-28 (latest session):** Phase 4c.2 is measured and the local judge
+is chosen — `mistral-small` (digest `8039dd90c113`, κ 0.586) over `gemma3:4b`
+(κ −0.257), both at a 0% parse-miss rate;
+[#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2) is closed. The rest
+of the session was documentation catching up to reality: `README.md` has a Phase
+4 section, and `docs/plan.md` was swept twice for drift — its Phase 4 design
+block was still describing an NFCorpus experiment eleven days after the dataset
+moved. **`4d`, the config comparison, is now designed**, and the second judge is
+deferred. Manual follow-up: `gemma3:4b` is still installed. Detail in
+[SESSIONS.md](SESSIONS.md).
 
 ## Working mode (carry this forward)
 
@@ -44,6 +41,12 @@ in [`docs/plan.md`](docs/plan.md) under 4d. Phase 4's remaining design is 4b the
   also the *superseded* rationale-based `refusal_ok` rubric — "THE BOUNDARIES"
   below it is current. **Mark it SUPERSEDED in place and fix the row pointer**;
   position no longer tells the next reader which wins.
+- ⚠️ **`CLAUDE.md` still lists Phase 3 as live and labels `[generate]` as Phase
+  3.** Line 64 reads "**3** wiki demo UI · **4** LLM-as-judge generation eval",
+  and the architecture diagram at line 70 puts `[generate]` under Phase 3. Phase
+  3 was **retired** on 2026-08-14 and generation moved to Phase 4
+  (`docs/plan.md`). Pre-dates this session, so it was flagged rather than edited
+  — say the word and it is a two-line fix.
 - ⚠️ **Do not publish the bake-off as "size matters".** The candidates differ in
   vendor, architecture and training corpus as well as parameter count (only
   quantization is matched). It is a *selection* result. A size ablation needs two
