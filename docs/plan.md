@@ -313,6 +313,63 @@ is the natural next chapter of the Phase 2 finding rather than a new topic.
   > separate these two models. Only labels can. Same class as `NDCG@10 = 0.0000`
   > from leaked `corpus_id`s — well-formed output, wrong meaning, nothing
   > raises.
+- **4d · the config comparison — the milestone this phase exists for.**
+  **Added 2026-08-28**, because it was only ever implied by the Scope and
+  Deliverable bullets below and never given a design. Score the four retrieval
+  configs Phases 1–2 left behind (LoRA `0.2725`, baseline `0.3159`, LoRA+rerank
+  `0.3407`, baseline+rerank `0.3412`) with the validated judge, and answer the
+  headline question: **does answer quality track NDCG@10?**
+
+  - **Run 4b first, and read it before running 4d.** If gold-padded context
+    barely beats baseline context, retrieval was never the bottleneck — and the
+    expected effect size across four configs spanning `0.2725`–`0.3412` is then
+    *smaller than that*, because those configs differ by less than the gap to
+    perfect evidence. Knowing the ceiling first tells you whether 4d is a
+    measurement or an underpowered one, and it is cheaper to learn that from two
+    runs than from five.
+  - **Hold `n_context` fixed across every config**, per the 4b amendment of
+    2026-08-23. A refusal-rate column that varies with prompt length measures
+    prompt length.
+  - **Report per config:** grounded rate (n and CI), refusal rate, and refusal
+    rate stratified by `gold_in_context`. The strata are the diagnostic; the
+    headline is whether the grounded column moves monotonically with the NDCG
+    column.
+  - **Judge:** `mistral-small`, digest `8039dd90c113`, rubric `v2`. Pin both in
+    the cache key — a judge swapped or a rubric edited mid-sweep makes the
+    configs incomparable, which is the same failure the retrieval cache exists
+    to prevent.
+  - **Both outcomes are results.** "Grounded rate tracks NDCG" validates four
+    phases of optimisation. "It does not" is the more interesting finding and
+    the one the phase predicts, and it says the ablation table has been
+    optimising a proxy. The failure case is neither of those: it is a comparison
+    too underpowered to distinguish them, which is what the 4b-first ordering and
+    the label-widening note are there to avoid.
+
+- **The second judge is deferred — decided 2026-08-28.** D10's remaining half
+  ("two judges, so their agreement becomes a result") is **not being built now**,
+  and the reasoning is worth keeping because the number is more attractive than
+  it is useful. **Judge–judge agreement is not evidence of correctness**: two
+  judges sharing a prompt, a rubric and the same passages can agree with each
+  other and both be wrong. This repo has the demonstration in hand — `gemma3:4b`
+  was perfectly *consistent* (30/30 well-formed rulings, a stable strict-sounding
+  policy) and *anti-correlated with the truth*. Two such judges would have
+  produced a reassuring agreement column and no information.
+
+  - **What to spend on instead:** widening the label set. The certifying axis is
+    n=16 with CI `[+0.09, +1.00]`; that interval, not the absence of a second
+    judge, is what limits every claim Phase 4 can make.
+  - **If a second judge is ever added, it is a diagnostic, not a claim** — use
+    disagreement to route contested rows to a human, and **do not filter them
+    out.** Judges disagree on the hard, ambiguous rows, which is where the
+    interesting failures live; dropping them raises the measured grounded rate
+    by deleting its counterexamples. Worse for 4d specifically: disagreement rate
+    almost certainly varies across configs (worse retrieval → messier context →
+    more ambiguous rows), so filtering would drop *more* rows from the *worse*
+    configs and flatter them, compressing the very gap 4d measures. A
+    denominator that shrinks differently per config is not comparable across
+    configs — the same error as reading `NDCG@100` against `NDCG@10`. Report
+    contested rows as a stratum, with `n` given both ways.
+
 - **Scored axes:** **faithfulness/groundedness** (every claim supported by the
   retrieved passages — needs no external ground truth) and **answer relevance**.
   **Correctness is deliberately excluded**: NFCorpus qrels label *document

@@ -24,24 +24,16 @@ Betty hand-writes the ML; Claude writes plumbing (argparse, logging, paths,
 sanity checks) and **coaches: concept first, then she writes it**, then review.
 Demonstrating bugs empirically is wanted; silently fixing them is not.
 
-## Open decisions
+## Tracked work
 
-Only questions **not yet shaped enough to be an issue** live here — see
-`CLAUDE.md`, "Repo conventions". Concrete work is in
+Concrete work lives in
 [GitHub issues](https://github.com/JiamanBettyWu/retrieval-lab/issues):
 [#1 (D5) dense queries](https://github.com/JiamanBettyWu/retrieval-lab/issues/1) ·
-[#2 (D13) judge size](https://github.com/JiamanBettyWu/retrieval-lab/issues/2) ·
-[#3 (D15) README stratification](https://github.com/JiamanBettyWu/retrieval-lab/issues/3)
-
-### D10: Two judges, or one? (Phase 4) — **generator and local judge settled**
-- **Settled:** generator `qwen3:8b`; local judge `mistral-small`, pinned by
-  digest, cleared on the fixture rather than on a spec sheet.
-- **Still open:** whether to add Sonnet 5 as a second judge so their agreement
-  becomes a result reported next to human κ. Needs an API branch in `judge_one`;
-  the fixture, rubric and scoring are already transport-agnostic.
-- **Why still a decision:** "two judges or one" has no definition of done until
-  someone decides what the agreement column is *for* — a robustness check, or a
-  claim. Shape it into an issue once that is answered, then it leaves this file.
+[#3 (D15) README stratification](https://github.com/JiamanBettyWu/retrieval-lab/issues/3).
+**No open decisions** — D10's last half (a second judge) was decided 2026-08-28:
+deferred, with the reasoning and the constraints on any future revival recorded
+in [`docs/plan.md`](docs/plan.md) under 4d. Phase 4's remaining design is 4b then
+4d, both specified there.
 
 ## Needs attention
 
@@ -80,12 +72,17 @@ Only questions **not yet shaped enough to be an issue** live here — see
 
 ## Pick up here
 
-1. **Fix `fixture.py`'s stale type case and mark the superseded rubric block** —
-   smallest change on this list and the one most likely to mislead a reader.
-   The current over-refusal type case is the Hund's-rule row (`5ae24b16…`).
-2. **`ollama rm gemma3:4b`** if the disk is wanted back — the winner's digest is
-   recorded in [#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2),
+1. **Run 4b — the gold-padded ceiling** (`docs/plan.md` 4b/4d). Read it *before*
+   running the config comparison: if gold context barely beats baseline context,
+   retrieval was never the bottleneck and 4d's expected effect is smaller still.
+   Hold `n_context` fixed, and note 4b is two runs (gold-padded, gold-only).
+2. **Fix `fixture.py`'s stale type case and mark the superseded rubric block** —
+   smallest change on the list and the one most likely to mislead a reader. The
+   current over-refusal type case is the Hund's-rule row (`5ae24b16…`).
+3. **`ollama rm gemma3:4b`** if the disk is wanted back — the winner's digest is
+   in [#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2),
    `LEARNINGS.md` and `README.md`, so a tag going away costs nothing.
-3. **Decide what a second judge's agreement column is *for*** (D10 above) — a
-   robustness check or a claim. Once answered it becomes an issue and leaves
-   this file.
+
+Standing note: **widening the label set past n=16 is the highest-value spend on
+judge trust** — the CI `[+0.09, +1.00]`, not the judge count, is what limits
+every Phase 4 claim.
