@@ -20,8 +20,9 @@ shareable: **everything is public by construction.**
 
 > **Amended 2026-08-14.** This paragraph used to end by flagging the private
 > wiki as an open sharing question (`TODO.md` D6). Phase 3 is retired and Phase
-> 4 runs over NFCorpus, so no private corpus is involved anywhere and D6
-> dissolves. The amendment also sharpens the pivot claim: as of Phase 2 the repo
+> 4 runs over NFCorpus [**2026-08-28: over `hotpotqa-distractor-pool` since
+> 2026-08-17 — also public, so the conclusion is unchanged**], so no private
+> corpus is involved anywhere and D6 dissolves. The amendment also sharpens the pivot claim: as of Phase 2 the repo
 > contained **no LLM at all** — every phase was retrieval, which is classic IR
 > rather than GenAI. Phase 4 is what actually closes that gap, and it does so by
 > pointing the same measurement discipline at a target where almost nobody
@@ -317,6 +318,27 @@ is the natural next chapter of the Phase 2 finding rather than a new topic.
   **Correctness is deliberately excluded**: NFCorpus qrels label *document
   relevance*, not answer correctness, so scoring it would mean inventing ground
   truth — the thing decision 2 exists to prevent.
+
+  > **Amended 2026-08-28 — what is actually scored is two axes, and neither is
+  > relevance.** As shipped, the judge rules on **`grounded`** (answered rows:
+  > every clause supported by the passage it cites) and **`refusal_ok`** (refused
+  > rows: was declining right given these passages). They are disjoint because a
+  > refusal makes no claims and would score trivially grounded otherwise — which
+  > is also why the certifying axis is n=16 of 30 labelled rows.
+  >
+  > **Answer relevance was never built** and no longer has a champion: it was
+  > listed here by analogy with RAGAS-style axis sets, and nothing downstream
+  > asks for it. Treat it as dropped unless someone argues it back in.
+  >
+  > **Correctness has been excluded, reinstated, and is still not built.** The
+  > 2026-08-17 amendment (below, in the scope-discipline section) correctly
+  > reinstated it once the dataset moved to `hotpotqa-distractor-pool`, which
+  > *does* ship gold short answers — but the scorer does not exist yet. It is
+  > carried in `TODO.md` with two constraints worth not re-deriving: quote it as
+  > **0.7619 over 14 with a 6.7% refusal rate** under the settled convention
+  > (refusals leave the denominator), and its normaliser is load-bearing
+  > (0.600 → 0.711 on the gold-context probe), so test it rather than eyeball
+  > it.
 - **The refusal gate — a measurement, not a framework.** If the retrieved
   context does not support an answer, refuse rather than hallucinate, and
   **report refusal rate per retrieval configuration**: does worse retrieval
@@ -336,19 +358,65 @@ is the natural next chapter of the Phase 2 finding rather than a new topic.
   > justified a graph library — stays out of scope unless the gate proves
   > insufficient.
   >
-  > **Still open:** whether the gate ships *at all*. If NFCorpus answers turn
+  > ~~**Still open:** whether the gate ships *at all*. If NFCorpus answers turn
   > out trivially groundable it never fires and the metric is constant. Decide
-  > by reading ten generated answers, per the risks below.
-- **Scope:** ~100 NFCorpus queries (sampled once, seeded, fixed), 4 retrieval
+  > by reading ten generated answers, per the risks below.~~
+  >
+  > **Settled 2026-08-28 — it ships and it fires.** Moot on the NFCorpus premise
+  > (the dataset moved; see the scope amendment below) and moot on the worry:
+  > refusal rate is **38.0%** over n=100 and is anything but constant — it tracks
+  > how much gold retrieval delivered (9.8% / 63.4% / 87.5% at 2 / 1 / 0 gold
+  > passages in context). The "read ten answers first" instruction was followed
+  > and paid for itself twice, finding the prompt-template leak and a refusal
+  > that was a comprehension failure in disguise (`LEARNINGS.md` 2026-08-23).
+- ~~**Scope:** ~100 NFCorpus queries (sampled once, seeded, fixed), 4 retrieval
   configs + the oracle-context ceiling, so ~500 generations and ~600 judge
-  calls. Cheap on a small fast model. **The ~50 hand labels are the real cost
+  calls. Cheap on a small fast model.~~ **The ~50 hand labels are the real cost
   and the only part that cannot be automated — which is exactly why they are
   what makes the result credible.**
+
+  > **Amended 2026-08-28 — the dataset is `hotpotqa-distractor-pool`, not
+  > NFCorpus, and the cost line was wrong in both directions.** The dataset moved
+  > on 2026-08-17 (D12, amended in the milestone above); this bullet was missed
+  > and kept saying NFCorpus. The shape of the scope survives — ~100 queries
+  > sampled once and seeded, 4 retrieval configs plus the ceiling — with three
+  > corrections:
+  >
+  > - **The ceiling is two runs, not one.** 4b splits into **gold-padded** (the
+  >   controlled contrast the config comparison is read against) and
+  >   **gold-only** (a true upper bound, never a counterfactual). See the 4b
+  >   amendment of 2026-08-23. `n_context` must be held fixed across every
+  >   config, or the refusal-rate column measures prompt length.
+  > - **"Cheap on a small fast model" did not survive contact.** The judge that
+  >   passed the fixture runs at **42.45 s/call**, so 100 queries is ~71 min per
+  >   config and ~5.9 h for four configs plus the ceiling. That is affordable
+  >   unattended, but it is an overnight run, not a coffee break — and the cheap
+  >   fast candidate was rejected on agreement, not on speed (issue #2).
+  > - **The hand labels came in at 30, not ~50** (16 on the certifying axis).
+  >   The bullet's instinct was right that they are the real cost; what it
+  >   understated is the consequence of stopping short — CI `[+0.09, +1.00]`.
+  >   **Widening the label set is the highest-value remaining spend on judge
+  >   trust**, ahead of adding a second judge.
 - **Known risks, recorded up front.** The judge may be too coarse to
   discriminate (the ungrounded fixture catches this *before* the spend).
   NFCorpus makes awkward RAG — biomedical abstracts, terse queries — so
   **generate ten answers by hand and read them before building anything**. And
   the finding may be "nothing tracks anything", which is still a result.
+
+  > **Amended 2026-08-28 — both named risks fired, and the mitigation worked
+  > both times.** "NFCorpus makes awkward RAG" was correct and is *why* Phase 4
+  > left it: a 20-question probe found the queries are not answerable questions
+  > (D12, 2026-08-17). Recorded here rather than struck, because a risk that was
+  > written down and then actually caught is the argument for writing them down.
+  >
+  > "The judge may be too coarse to discriminate" also fired — `gemma3:4b` landed
+  > at κ −0.257 — but **not through the mechanism this bullet expected.** The
+  > parenthetical trusts the ungrounded fixture to catch it before the spend;
+  > that fixture was never built (see the 4c amendment), and the failure would
+  > have slipped past a format check regardless, since the model parsed 30/30
+  > rows cleanly. What caught it was hand labels. Read together: the risk
+  > register was right about *what* could go wrong and wrong about *what would
+  > notice*.
 - **Deliverable:** an answer-quality column beside the retrieval column in the
   ablation table, a published judge-vs-human κ, and a stated answer to whether
   NDCG@10 bought anything downstream.
