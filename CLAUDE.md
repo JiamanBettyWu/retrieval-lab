@@ -82,7 +82,8 @@ NFCorpus queries are terse topic strings rather than answerable questions. Phase
 
 `data.py` loads BEIR (corpus, queries, **qrels** — the ground-truth labels).
 `retrieve.py` embeds and ranks. `cache.py` persists the result.
-`evaluate.py`, `oracle.py` and `rerank.py` are the entrypoints;
+`evaluate.py`, `oracle.py` and `rerank.py` are the Phase 0-2 entrypoints;
+`hotpot_pool.py`, `generate.py`, `fixture.py` and `judge.py` are Phase 4's.
 `observability.py` shims Weave's `@op` so every phase runs with weave absent or
 uninitialized.
 
