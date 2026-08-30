@@ -57,11 +57,10 @@ in [`docs/plan.md`](docs/plan.md).
 - ⚠️ **`n15 seed0` is still a prompt-v1 batch** (`n100 seed0` was regenerated
   2026-08-28). It is the trial batch and carries no published claim, but do not
   quote it beside a v2 number without re-running it.
-- ⚠️ **Carried, the correctness scorer:** `LEARNINGS.md`'s `mean token-F1 0.711`
-  predates D14 and reads **0.7619 over 14, refusal rate 6.7%** under the settled
-  convention — quote it that way, and write the scorer so refusals leave the
-  denominator. Its normaliser is load-bearing (0.600 → 0.711): test it, don't
-  eyeball it (`LEARNINGS.md` 2026-08-19).
+- ⚠️ **Carried:** `LEARNINGS.md`'s `mean token-F1 0.711` predates D14 and reads
+  **0.7619 over 14, refusal rate 6.7%** under the settled convention — quote it
+  that way. (How to *write* the scorer is now design, not a flag: `docs/plan.md`
+  4b amendment 2026-08-29.)
 - ⚠️ Carried: **probe scripts live in gitignored `scratchpad/`** while
   `LEARNINGS.md` cites their numbers — decide whether the ones behind published
   figures belong in the repo. And **`tests/test_finetune.py` does not exist**
@@ -71,10 +70,17 @@ in [`docs/plan.md`](docs/plan.md).
 
 ## Pick up here
 
-1. **Run 4b — the gold-padded ceiling** (`docs/plan.md` 4b/4d). Read it *before*
+1. **Write and test the `token_f1` correctness scorer** — now a hard
+   prerequisite for 4b (`docs/plan.md`, 4b amendment 2026-08-29). It does not
+   exist: `generate.py:71` reserves the field, `hotpot_pool.py:214` has the gold
+   answers, nothing scores it. Per D14, refusals leave the denominator. **Test
+   the normaliser** — it moved the trial figure 0.600 → 0.711, so eyeballing it
+   is not enough. Needs no new hand labels.
+2. **Run 4b — the gold-padded ceiling** (`docs/plan.md` 4b/4d). Read it *before*
    running the config comparison: if gold context barely beats baseline context,
    retrieval was never the bottleneck and 4d's expected effect is smaller still.
-   Hold `n_context` fixed, and note 4b is two runs (gold-padded, gold-only).
+   Hold `n_context` fixed; 4b is two runs (gold-padded, gold-only) and now
+   reports three measurements (refusal rate, grounded rate, correctness).
 
 Standing note: **widening the label set past n=16 is the highest-value spend on
 judge trust** — the CI `[+0.09, +1.00]`, not the judge count, is what limits

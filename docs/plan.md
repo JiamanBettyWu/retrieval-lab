@@ -259,6 +259,45 @@ is the natural next chapter of the Phase 2 finding rather than a new topic.
   > an oracle may only reorder what retrieval found still binds everywhere else,
   > and `context_for` must keep reading `results`.
 
+  > **Amended 2026-08-29 — 4b reports THREE measurements, and one of them does
+  > not exist yet.** The bullet above says a real config is read against the
+  > ceiling if it "barely beats" it, and never defines *beats*. 4d (added
+  > 2026-08-28) does define its columns, so 4b was silently inheriting them.
+  > Naming them here, because the two must match or the comparison 4b exists to
+  > enable is not a comparison:
+  >
+  >   - **refusal rate** — did it answer at all. Free, no judge, no scorer, and
+  >     the signal already known to move hardest with evidence (9.8 / 63.4 /
+  >     87.5% across `gold_in_context` 2/1/0).
+  >   - **grounded rate** — is the rationale supported by the passages it cites.
+  >     The judge, `mistral-small` digest `8039dd90c113`, rubric v2.
+  >   - **correctness** — token-F1 of the short answer against HotpotQA's gold,
+  >     over non-refused rows only, **per D14**.
+  >
+  > **Why all three rather than the cheapest one.** They answer different
+  > questions and are free to disagree: a model can be grounded and wrong
+  > (faithfully reasoning from a passage that does not carry the answer — the
+  > Vienna case), or correct and ungrounded (right answer, invented
+  > justification). Collapsing them hides exactly the behaviour 4b is asking
+  > about. **Where they diverge is a finding, not noise.**
+  >
+  > **D14 is load-bearing here specifically.** Refusals leave the correctness
+  > denominator, with refusal rate published beside it. That convention matters
+  > more in 4b than anywhere else in the project, because 4b *deliberately moves
+  > refusal rate* — it changes what evidence is present. Let refusals score 0
+  > and correctness stops being a third measurement and becomes a noisy restatement
+  > of the first.
+  >
+  > **Prerequisite, and it is real: `token_f1` is not implemented.**
+  > `generate.py:71` reserves the field and `hotpot_pool.py:214` supplies the gold
+  > answers, but nothing scores it. Write and TEST the scorer before running 4b —
+  > its normaliser is load-bearing, not cosmetic (article and punctuation
+  > stripping moved the trial figure 0.600 → 0.711; `LEARNINGS.md` 2026-08-19),
+  > and a normaliser checked by eye is the same class of well-formed-but-wrong
+  > output as a leaked `corpus_id`. It needs **no new hand labels** — the gold
+  > answers are already in the pool, and the fixture sheet stays blind to them by
+  > design.
+
 - **4c · validate the judge before trusting it.** The part that makes this the
   same project rather than a tutorial, in three checks:
   1. **A known-answer fixture** — the analogue of the five-doc `NDCG@10 = 1.0`
@@ -330,10 +369,13 @@ is the natural next chapter of the Phase 2 finding rather than a new topic.
   - **Hold `n_context` fixed across every config**, per the 4b amendment of
     2026-08-23. A refusal-rate column that varies with prompt length measures
     prompt length.
-  - **Report per config:** grounded rate (n and CI), refusal rate, and refusal
-    rate stratified by `gold_in_context`. The strata are the diagnostic; the
-    headline is whether the grounded column moves monotonically with the NDCG
-    column.
+  - **Report per config:** grounded rate (n and CI), refusal rate, **correctness
+    (token-F1 over non-refused rows, per D14)**, and refusal rate stratified by
+    `gold_in_context`. The strata are the diagnostic; the headline is whether the
+    grounded column moves monotonically with the NDCG column.
+    *(Correctness added 2026-08-29 with the 4b amendment above — 4b and 4d must
+    report the same columns, or the ceiling 4b establishes is not one 4d can be
+    read against.)*
   - **Judge:** `mistral-small`, digest `8039dd90c113`, rubric `v2`. Pin both in
     the cache key — a judge swapped or a rubric edited mid-sweep makes the
     configs incomparable, which is the same failure the retrieval cache exists
