@@ -22,7 +22,8 @@ Demonstrating bugs empirically is wanted; silently fixing them is not.
 Concrete work lives in
 [GitHub issues](https://github.com/JiamanBettyWu/retrieval-lab/issues):
 [#1 (D5) dense queries](https://github.com/JiamanBettyWu/retrieval-lab/issues/1) ·
-[#3 (D15) README stratification](https://github.com/JiamanBettyWu/retrieval-lab/issues/3).
+[#3 (D15) README stratification](https://github.com/JiamanBettyWu/retrieval-lab/issues/3) ·
+[#5 token-F1 scorer](https://github.com/JiamanBettyWu/retrieval-lab/issues/5).
 **No open decisions.** Phase 4's remaining design is 4b then 4d, both specified
 in [`docs/plan.md`](docs/plan.md).
 
@@ -70,12 +71,12 @@ in [`docs/plan.md`](docs/plan.md).
 
 ## Pick up here
 
-1. **Write and test the `token_f1` correctness scorer** — now a hard
-   prerequisite for 4b (`docs/plan.md`, 4b amendment 2026-08-29). It does not
-   exist: `generate.py:71` reserves the field, `hotpot_pool.py:214` has the gold
-   answers, nothing scores it. Per D14, refusals leave the denominator. **Test
-   the normaliser** — it moved the trial figure 0.600 → 0.711, so eyeballing it
-   is not enough. Needs no new hand labels.
+1. **Write and test the `token_f1` correctness scorer** —
+   [#5](https://github.com/JiamanBettyWu/retrieval-lab/issues/5), a hard
+   prerequisite for 4b (`docs/plan.md`, 4b amendment 2026-08-29). Read the issue
+   for the full definition of done; the short version is that it does not exist,
+   refusals leave the denominator per D14, and the normaliser needs tests rather
+   than an eyeball. Branch `feat/issue-5-token-f1-scorer`.
 2. **Run 4b — the gold-padded ceiling** (`docs/plan.md` 4b/4d). Read it *before*
    running the config comparison: if gold context barely beats baseline context,
    retrieval was never the bottleneck and 4d's expected effect is smaller still.
