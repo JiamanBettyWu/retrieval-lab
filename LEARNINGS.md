@@ -1045,7 +1045,7 @@ gemma3:4b       -0.257     16    [-0.67, +0.14]   5/16    0.0%      6.77
 **A judge can pass every structural check available and be anti-correlated with
 the truth.** `gemma3:4b` emitted well-formed, parseable rulings on 30/30 rows and
 landed below chance. The error is systematic, not noisy — it ruled `false` on 8
-of the 11 rows labelled `true`:
+of the 10 rows labelled `true`:
 
 ```
 human -> judge, grounded axis

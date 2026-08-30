@@ -587,7 +587,7 @@ number means.
 
 **The finding is not "bigger is better."** `gemma3:4b` emitted well-formed,
 parseable rulings on **30/30** rows and still landed below chance, ruling `false`
-on 8 of the 11 rows a human labelled `true` — it has the *shape* of a strict
+on 8 of the 10 rows a human labelled `true` — it has the *shape* of a strict
 groundedness judgement without the discrimination. Both candidates had passed the
 format smoke test 4/4 an hour earlier. **Parse rate is the cheap monitor you
 would actually automate, and it cannot tell these two models apart.** Only labels
