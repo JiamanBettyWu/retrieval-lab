@@ -4,15 +4,11 @@ Forward-looking state. Session history lives in [SESSIONS.md](SESSIONS.md).
 
 ## Current state
 
-**As of 2026-08-28 (latest session):** Phase 4c.2 is measured and the local judge
-is chosen — `mistral-small` (digest `8039dd90c113`, κ 0.586) over `gemma3:4b`
-(κ −0.257), both at a 0% parse-miss rate;
-[#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2) is closed. The rest
-of the session was documentation catching up to reality: `README.md` has a Phase
-4 section, and `docs/plan.md` was swept twice for drift — its Phase 4 design
-block was still describing an NFCorpus experiment eleven days after the dataset
-moved. **`4d`, the config comparison, is now designed**, and the second judge is
-deferred. Manual follow-up: `gemma3:4b` is still installed. Detail in
+**As of 2026-08-29 (latest session):** No code changed. A verification pass over
+the Phase 4c.2 bake-off numbers found one wrong and corrected it in `f75bacd` —
+`gemma3:4b` ruled `false` on **8 of the 10** human-`true` rows, not 8 of 11.
+Every other Phase 4 figure re-verified clean against the artifacts. Phase 4's
+`4b` (the gold-padded ceiling) is still the next actual work. Detail in
 [SESSIONS.md](SESSIONS.md).
 
 ## Working mode (carry this forward)
@@ -27,30 +23,36 @@ Concrete work lives in
 [GitHub issues](https://github.com/JiamanBettyWu/retrieval-lab/issues):
 [#1 (D5) dense queries](https://github.com/JiamanBettyWu/retrieval-lab/issues/1) ·
 [#3 (D15) README stratification](https://github.com/JiamanBettyWu/retrieval-lab/issues/3).
-**No open decisions** — D10's last half (a second judge) was decided 2026-08-28:
-deferred, with the reasoning and the constraints on any future revival recorded
-in [`docs/plan.md`](docs/plan.md) under 4d. Phase 4's remaining design is 4b then
-4d, both specified there.
+**No open decisions.** Phase 4's remaining design is 4b then 4d, both specified
+in [`docs/plan.md`](docs/plan.md).
 
 ## Needs attention
 
+- ⚠️ **`f75bacd`'s commit message names an external venue by name, on a public
+  repo, under your real account.** Pushed this session before the implication
+  was considered. This repo already carried every Phase 4 number publicly, so
+  the exposure predates the commit — but the commit is the only place that
+  names the venue. **Your call:** leave it; amend and force-push `main` (the
+  message is the only change, but it rewrites the tip SHA); or make the repo
+  private until decisions are out. Ask before acting — a force-push to a public
+  `main` is not a silent fix.
+- ⚠️ **Numbers in prose are being written from summaries, not artifacts.** This
+  session's error travelled *into* this repo from an external note and sat in
+  `LEARNINGS.md` directly contradicting the matrix two lines below it. Worth a
+  habit: any confusion-matrix claim gets checked against
+  `data/labels/fixture__*.jsonl`, and the cross-judge invariant (same rows,
+  same labels ⇒ same human-true count) is free.
 - ⚠️ **`fixture.py`'s over-refusal type case is factually stale, not just
   superseded.** The block above `LABEL_VALUES` names seed-1 row 1 (Edmund
   Mortimer) as the type case; under generator v2 **that row answers**. The
-  current type case is the Hund's-rule row (`5ae24b16…`, gold 2/2). Same block is
-  also the *superseded* rationale-based `refusal_ok` rubric — "THE BOUNDARIES"
-  below it is current. **Mark it SUPERSEDED in place and fix the row pointer**;
-  position no longer tells the next reader which wins.
-- ⚠️ **`CLAUDE.md` still lists Phase 3 as live and labels `[generate]` as Phase
-  3.** Line 64 reads "**3** wiki demo UI · **4** LLM-as-judge generation eval",
-  and the architecture diagram at line 70 puts `[generate]` under Phase 3. Phase
-  3 was **retired** on 2026-08-14 and generation moved to Phase 4
-  (`docs/plan.md`). Pre-dates this session, so it was flagged rather than edited
-  — say the word and it is a two-line fix.
+  current type case is the Hund's-rule row (`5ae24b16…`, gold 2/2). Same block
+  is also the *superseded* rationale-based `refusal_ok` rubric — "THE
+  BOUNDARIES" below it is current. **Mark it SUPERSEDED in place and fix the row
+  pointer**; position no longer tells the next reader which wins.
 - ⚠️ **Do not publish the bake-off as "size matters".** The candidates differ in
   vendor, architecture and training corpus as well as parameter count (only
-  quantization is matched). It is a *selection* result. A size ablation needs two
-  sizes in one family (`gemma3:4b` vs `gemma3:27b`) and was not run.
+  quantization is matched). It is a *selection* result. A size ablation needs
+  two sizes in one family (`gemma3:4b` vs `gemma3:27b`) and was not run.
 - ⚠️ **`grounded` got stricter in `b4e6b45`** — principle-only wording → three
   named failure modes. It changes what the judge measures, and **the README must
   say which version produced the κ**. One edit reverts it.
@@ -75,16 +77,14 @@ in [`docs/plan.md`](docs/plan.md) under 4d. Phase 4's remaining design is 4b the
 
 ## Pick up here
 
-1. **Run 4b — the gold-padded ceiling** (`docs/plan.md` 4b/4d). Read it *before*
+1. **Rule on the `f75bacd` commit-message flag above** — it is the only item
+   with a clock on it.
+2. **Run 4b — the gold-padded ceiling** (`docs/plan.md` 4b/4d). Read it *before*
    running the config comparison: if gold context barely beats baseline context,
    retrieval was never the bottleneck and 4d's expected effect is smaller still.
    Hold `n_context` fixed, and note 4b is two runs (gold-padded, gold-only).
-2. **Fix `fixture.py`'s stale type case and mark the superseded rubric block** —
-   smallest change on the list and the one most likely to mislead a reader. The
-   current over-refusal type case is the Hund's-rule row (`5ae24b16…`).
-3. **`ollama rm gemma3:4b`** if the disk is wanted back — the winner's digest is
-   in [#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2),
-   `LEARNINGS.md` and `README.md`, so a tag going away costs nothing.
+3. **Fix `fixture.py`'s stale type case and mark the superseded rubric block** —
+   the current over-refusal type case is the Hund's-rule row (`5ae24b16…`).
 
 Standing note: **widening the label set past n=16 is the highest-value spend on
 judge trust** — the CI `[+0.09, +1.00]`, not the judge count, is what limits

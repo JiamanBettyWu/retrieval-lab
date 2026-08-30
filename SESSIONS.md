@@ -16,6 +16,50 @@ harness) in
 
 ---
 
+## 2026-08-29 (a published number was wrong, and the invariant that caught it)
+
+No code changed. The session was a verification pass over the Phase 4c.2
+bake-off numbers, prompted by an external write-up that quotes them, and it
+found one of them wrong in three files.
+
+**The error.** `README.md`, `LEARNINGS.md` and `SESSIONS.md` all said
+`gemma3:4b` "ruled `false` on 8 of the 11 rows a human labelled `true`". The
+grounded axis has **10** human-`true` rows, not 11. Corrected in `f75bacd`;
+`SESSIONS.md:100` keeps the old number because this journal is append-only, so
+this entry is its correction.
+
+**How it was caught, and the part worth keeping.** Not by recomputing κ — the κ
+values were all fine — but by a consistency check that needs no computation:
+*both judges scored the same 16 rows against the same human labels, so their
+human-true counts must agree.* mistral-small's confusion cells give `TT 9 + TF
+1 = 10`; gemma3:4b's give `TT 2 + TF 8 = 10`. Any pair of numbers that
+disagrees there is arithmetic, not measurement. Confirmed against
+`data/labels/fixture__hotpotqa-distractor-pool__n30__seed1.jsonl`, which holds
+10 `True` and 6 `False` on that axis.
+
+**Where it came from.** A derivation in the external write-up's provenance
+notes read "9+2 = 11" — it added mistral-small's `TT 9` to mistral-small's `FT
+2`, mixing rows *and* judges. Human-true is a property of the labels, not of
+the judge, so it can only be read off one judge's `TT + TF`. The wrong figure
+was then copied outward into this repo. That direction of travel is the lesson:
+the prose was written from a summary rather than from the artifact, and
+`LEARNINGS.md` ended up contradicting the confusion matrix printed two lines
+below it without anyone noticing. The provenance note now quotes its own old
+line rather than silently replacing it.
+
+**The corrected claim is stronger** — 8/10 is 80% of human-true rows flipped,
+not 73% — which is the usual shape of these: the error was not flattering, just
+wrong.
+
+Everything else in the bake-off re-verified clean against the artifacts: κ
++0.586 / −0.257, n=16, 0.0% parse-miss on both, 42.45 and 6.77 s/call (so "6×
+faster" holds), the κ gap of 0.843 against the pre-registered 0.2 tie band, the
+refusal axis at +0.632 / −0.105 with n=14 and exactly two minority rows, the
+30-row fixture splitting 16 answered / 14 refused with `n/a` on the unused
+axis, and the refusal curve at 9.8 / 63.4 / 87.5%.
+
+---
+
 ## 2026-08-28, later (the docs catch up, and the plan's Phase 4 was still an NFCorpus experiment)
 
 Second half of the same session, after the first handoff (`b4e2d05`). No code
