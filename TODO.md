@@ -34,13 +34,15 @@ in [`docs/plan.md`](docs/plan.md).
   habit: any confusion-matrix claim gets checked against
   `data/labels/fixture__*.jsonl`, and the cross-judge invariant (same rows,
   same labels ⇒ same human-true count) is free.
-- ⚠️ **`fixture.py`'s over-refusal type case is factually stale, not just
-  superseded.** The block above `LABEL_VALUES` names seed-1 row 1 (Edmund
-  Mortimer) as the type case; under generator v2 **that row answers**. The
-  current type case is the Hund's-rule row (`5ae24b16…`, gold 2/2). Same block
-  is also the *superseded* rationale-based `refusal_ok` rubric — "THE
-  BOUNDARIES" below it is current. **Mark it SUPERSEDED in place and fix the row
-  pointer**; position no longer tells the next reader which wins.
+- ⚠️ **The external write-up describes `refusal_ok` using the SUPERSEDED rule.**
+  It says the rubric counts "only over-refusals the model's own text convicts it
+  of" — that is the rationale-based copy, retired 2026-08-26. The rule of record
+  tests the PASSAGES (`fixture.py`, THE BOUNDARIES), under which a refusal counts
+  whether or not the rationale exposes it. **No number moves** — seed 1's
+  divergence region is empty, so every label is identical either way — but it is
+  a self-description error in the paragraph explaining the labelling procedure.
+  Fix at that document's next revision; nothing to change in this repo, which is
+  self-consistent as of `e5e4ee7`.
 - ⚠️ **Do not publish the bake-off as "size matters".** The candidates differ in
   vendor, architecture and training corpus as well as parameter count (only
   quantization is matched). It is a *selection* result. A size ablation needs
@@ -73,8 +75,6 @@ in [`docs/plan.md`](docs/plan.md).
    running the config comparison: if gold context barely beats baseline context,
    retrieval was never the bottleneck and 4d's expected effect is smaller still.
    Hold `n_context` fixed, and note 4b is two runs (gold-padded, gold-only).
-2. **Fix `fixture.py`'s stale type case and mark the superseded rubric block** —
-   the current over-refusal type case is the Hund's-rule row (`5ae24b16…`).
 
 Standing note: **widening the label set past n=16 is the highest-value spend on
 judge trust** — the CI `[+0.09, +1.00]`, not the judge count, is what limits
