@@ -28,14 +28,6 @@ in [`docs/plan.md`](docs/plan.md).
 
 ## Needs attention
 
-- ⚠️ **`f75bacd`'s commit message names an external venue by name, on a public
-  repo, under your real account.** Pushed this session before the implication
-  was considered. This repo already carried every Phase 4 number publicly, so
-  the exposure predates the commit — but the commit is the only place that
-  names the venue. **Your call:** leave it; amend and force-push `main` (the
-  message is the only change, but it rewrites the tip SHA); or make the repo
-  private until decisions are out. Ask before acting — a force-push to a public
-  `main` is not a silent fix.
 - ⚠️ **Numbers in prose are being written from summaries, not artifacts.** This
   session's error travelled *into* this repo from an external note and sat in
   `LEARNINGS.md` directly contradicting the matrix two lines below it. Worth a
@@ -77,13 +69,11 @@ in [`docs/plan.md`](docs/plan.md).
 
 ## Pick up here
 
-1. **Rule on the `f75bacd` commit-message flag above** — it is the only item
-   with a clock on it.
-2. **Run 4b — the gold-padded ceiling** (`docs/plan.md` 4b/4d). Read it *before*
+1. **Run 4b — the gold-padded ceiling** (`docs/plan.md` 4b/4d). Read it *before*
    running the config comparison: if gold context barely beats baseline context,
    retrieval was never the bottleneck and 4d's expected effect is smaller still.
    Hold `n_context` fixed, and note 4b is two runs (gold-padded, gold-only).
-3. **Fix `fixture.py`'s stale type case and mark the superseded rubric block** —
+2. **Fix `fixture.py`'s stale type case and mark the superseded rubric block** —
    the current over-refusal type case is the Hund's-rule row (`5ae24b16…`).
 
 Standing note: **widening the label set past n=16 is the highest-value spend on

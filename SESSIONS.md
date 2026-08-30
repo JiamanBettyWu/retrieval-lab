@@ -58,6 +58,15 @@ refusal axis at +0.632 / −0.105 with n=14 and exactly two minority rows, the
 30-row fixture splitting 16 answered / 14 refused with `n/a` on the unused
 axis, and the refusal curve at 9.8 / 63.4 / 87.5%.
 
+**One flag, resolved the same session.** `f75bacd`'s commit message named an
+external venue on this public repo, against a standing decision not to. Betty's
+call: **leave it** — the discovery probability is low, and the alternatives
+(force-pushing a public `main`, or taking the repo private) both cost more than
+the exposure is worth. Recorded here rather than left in `TODO.md`, since the
+question is settled. `gemma3:4b` was also removed locally; its digest stays
+pinned in issue #2, `LEARNINGS.md` and `README.md`, so the tag going away costs
+nothing.
+
 ---
 
 ## 2026-08-28, later (the docs catch up, and the plan's Phase 4 was still an NFCorpus experiment)
