@@ -147,11 +147,36 @@ def blank_labels() -> dict:
 #                   passage gets you to "a Gluck opera", not to the answer.
 #
 #   refusal_ok (refused rows only)
+#
+#     ┌─ SUPERSEDED 2026-08-26. Do not label from this subsection. ─────────────
+#     │ The rule of record for `refusal_ok` is THE BOUNDARIES, BELOW
+#     │ `LABEL_VALUES`. This copy tests the RATIONALE; the boundary of record
+#     │ tests the PASSAGES, and they disagree on one shape — passages support an
+#     │ answer, rationale never names it. Kept in place rather than deleted
+#     │ because the κ in `README.md` was produced under labels that satisfy
+#     │ BOTH: seed 1's divergence region is empty (both `refusal_ok=False` rows
+#     │ name the answer in their rationale), which is why the disagreement
+#     │ changed no label. Position no longer tells you which rule wins — this
+#     │ banner does. The `grounded` subsection above is NOT superseded; THE
+#     │ BOUNDARIES sharpens it rather than replacing it.
+#     └────────────────────────────────────────────────────────────────────────
+#
 #     true  — refusing was the right call on these passages.
 #     false — an OVER-REFUSAL, judged by a deliberately narrow test: the
 #             rationale itself names the answer correctly, and the model refused
-#             anyway. Seed-1 row 1 is the type case — it identifies Edmund
-#             Mortimer, then emits the sentinel on a technicality.
+#             anyway.
+#
+#     TYPE CASE, CORRECTED 2026-08-29. This subsection used to name seed-1 row 1
+#     (Edmund Mortimer) as the type case. That pointer is stale twice over: the
+#     row is no longer a refusal at all — under generator prompt v2 it ANSWERS,
+#     so it carries no `refusal_ok` label — and the rule it illustrated is the
+#     superseded one. The current type case is the HUND'S-RULE row
+#     (`5ae24b16…`, `gold_in_context` 2/2, `refusal_ok=False`): passage [6]
+#     establishes Hund's first rule and its importance in chemistry, and the
+#     model names Friedrich Hund and refuses anyway, on the question's exact
+#     phrasing. It is the type case under EITHER rule, which is what makes it
+#     safe to cite from a superseded block.
+#
 #     "CORRECTLY" MEANS: what these ten passages ESTABLISH — not what HotpotQA's
 #     gold answer says. The two come apart exactly where it matters. On a row
 #     with `gold_in_context: 0` the gold answer is not reachable from the context
@@ -488,7 +513,8 @@ def report_strata(gens: list[Generation], qrels: dict) -> None:
 # question is rendered in full above the prompt rather than trusting the slug to
 # carry it at 11pm — and it doubles as the rubric being on-screen while labelling.
 #
-# These sentences MUST match the boundaries recorded above LABEL_VALUES. Sharpen
+# These sentences MUST match the boundaries recorded BELOW LABEL_VALUES (THE
+# BOUNDARIES, 2026-08-26 — not the superseded copy above it). Sharpen
 # one and you sharpen both — they are the same rubric, and this is the copy that
 # is actually on screen at 11pm.
 #
