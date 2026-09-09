@@ -1019,7 +1019,7 @@ models, prints the raws, writes nothing.
 "THE BOUNDARIES" block below it. They disagree on `refusal_ok` — the older one
 rules on whether the *rationale* names the answer, the newer on whether the
 *passages* support one — and `ce989db` amended `AXIS_QUESTIONS` to the passages
-rule. Keeping the superseded text is deliberate and right (`CLAUDE.md`: a
+rule. Keeping the superseded text is deliberate and right (`AGENTS.md`: a
 reversal should say so rather than overwrite silently), but it means "the rubric
 of record" is no longer answerable by position in the file, and `judge.py`'s
 docstring pointed at the older block. v1 of the judge prompt was built from the
