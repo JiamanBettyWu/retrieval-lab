@@ -16,6 +16,26 @@ harness) in
 
 ---
 
+## 2026-09-08 (instruction ownership moves from one agent to the repository)
+
+**The repository is now agent-agnostic.** `AGENTS.md` is the canonical source
+of instructions: setup, architecture, measurement discipline, and repository
+conventions now name no particular coding agent. `CLAUDE.md` is deliberately a
+three-line compatibility wrapper that imports `@AGENTS.md`, so Claude Code sees
+the same instructions without maintaining a second copy. The convention inside
+the guide likewise changed from "which agent wrote this" to the agent-neutral
+version.
+
+**The small reference sweep mattered.** `LEARNINGS.md` had one live pointer to
+the old source of truth, and now points at `AGENTS.md`. Remaining `CLAUDE.md`
+mentions are historical journal entries, so they stay: this file is append-only
+and those entries accurately record the names and workflow in use at the time.
+No code, runtime configuration, CI, or automation depended on the old file.
+
+Landed directly on `main` as documentation-only bookkeeping in `3a23547`.
+
+---
+
 ## 2026-08-29 (a published number was wrong, and the invariant that caught it)
 
 No code changed. The session was a verification pass over the Phase 4c.2
