@@ -13,8 +13,8 @@ LLM-as-judge calibrated against hand labels.
 > promoted to Phase 4 and is the next real phase. See
 > [`docs/plan.md`](docs/plan.md).
 
-> Full plan: [`docs/plan.md`](docs/plan.md). Current state and open decisions:
-> [`TODO.md`](TODO.md).
+> Full plan: [`docs/plan.md`](docs/plan.md). Open work:
+> [GitHub issues](https://github.com/JiamanBettyWu/retrieval-lab/issues).
 
 ## Phase 0 — baseline retriever + eval harness
 

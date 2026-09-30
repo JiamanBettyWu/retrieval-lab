@@ -23,3 +23,7 @@ build/
 dist/
 *.egg-info/
 .pytest_cache/
+# working notes — local-only since 2026-09-29; earlier versions stay in history
+TODO.md
+SESSIONS.md
+sessions/

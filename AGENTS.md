@@ -154,6 +154,11 @@ an already-specialized model would flatten the ablation.
   overwritten each session. **`SESSIONS.md`** = append-only dated journal; never
   edit past entries. Both are refreshed via `/baton:handoff`, which is
   user-invocable only — ask the user to run it.
+  **Both are local-only** (gitignored 2026-09-29, with the `sessions/` archive,
+  reversing their earlier tracked status): they are working notes, and working
+  notes can mention work that is not public yet. Earlier versions remain in git
+  history. Never `git add -f` them; a handoff writes the files and commits
+  nothing.
 - **Concrete work lives in GitHub issues, not in `TODO.md`** (adopted
   2026-08-23). The dividing line: **an issue is a unit of work with a definition
   of done; an "Open decision" is a question not yet shaped enough to have one.**
@@ -174,8 +179,8 @@ an already-specialized model would flatten the ablation.
 - **Substantive code changes go through a PR; bookkeeping goes straight to
   `main`** (adopted 2026-08-23). A new module, a phase, a prompt-version bump,
   anything that invalidates cached artifacts or changes a published number:
-  branch, PR, `/code-review`, merge. Handoffs, `SESSIONS.md`, `LEARNINGS.md`,
-  `TODO.md` and doc-only edits: commit to `main` directly. **The test is whether
+  branch, PR, `/code-review`, merge. `LEARNINGS.md` and doc-only edits: commit
+  to `main` directly. **The test is whether
   a reviewer would have anything to say** — a PR whose entire diff is a journal
   entry is ceremony, and this repo does not do things it cannot justify.
   Branches are named `feat/issue-<N>-<slug>` — e.g. `feat/issue-2-judge-bakeoff`
