@@ -66,7 +66,8 @@ BEIR set (done — it *lost*, and the row stays; see `README.md`) ·
 ~~**3** wiki demo UI~~ **retired 2026-08-14** — a demo is not a measurement, and
 generation was promoted to Phase 4 · **4** generation + LLM-as-judge eval
 (in progress: 4a generation and 4c judge validation done, **4b** the gold-padded
-ceiling and **4d** the config comparison next).
+ceiling and **4d** the config comparison next — **paused until Feb 2027**,
+along with the token-F1 scorer #5).
 
 ## Architecture
 
