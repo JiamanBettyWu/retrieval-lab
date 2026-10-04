@@ -57,6 +57,12 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 # prompt and a cache that silently serves answers to the previous wording.
 PROMPT_VERSION = "v2"
 
+# A reply here is two short tagged fields — the longest on disk is ~200 tokens.
+# The cap exists for the reply that never ends: a repetition loop inside
+# <rationale> runs until the context window is full, outlasts the request
+# timeout, and takes the whole batch down with it.
+MAX_OUTPUT_TOKENS = 600
+
 REFUSAL = "__REFUSED__"
 SENTINEL = "INSUFFICIENT_CONTEXT"
 
@@ -71,6 +77,8 @@ class Generation:
     answer: str             # the short answer, for token-F1 against gold
     rationale: str          # the model's supporting text, for faithfulness
     refused: bool
+    truncated: bool = False  # the output cap ended it, not the model; defaulted
+                             # so batches cached before the field existed load
 
 
 # ─────────────────────────── Betty's stubs ───────────────────────────
@@ -200,30 +208,43 @@ def should_refuse(parsed: tuple[str, str]) -> bool:
 
 # ─────────────────────── plumbing (wired, working) ───────────────────────
 
-def call_ollama(prompt: str, model: str = GENERATOR, timeout: int = 600) -> str:
-    """One generation. Thinking off, temperature 0.
+def ollama_generate(prompt: str, model: str = GENERATOR, timeout: int = 600,
+                    max_tokens: int | None = None) -> dict:
+    """One generation, returned as Ollama's whole reply. Thinking off, temperature 0.
 
     `think: False` matters more than it looks: qwen3 is a reasoning model by
     default and otherwise wraps every answer in a <think> block, which both
     triples latency and puts unsupported speculation into text the judge will
     read as part of the answer.
+
+    The whole reply rather than just its text, because `done_reason` is the only
+    place a capped generation differs from a finished one: "length" means
+    `max_tokens` ended it, "stop" means the model did.
     """
+    options: dict = {"temperature": 0}
+    if max_tokens is not None:
+        options["num_predict"] = max_tokens
     body = json.dumps({
         "model": model,
         "prompt": prompt,
         "stream": False,
         "think": False,
-        "options": {"temperature": 0},
+        "options": options,
     }).encode()
     req = urllib.request.Request(OLLAMA_URL, body, {"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read())["response"]
+            return json.loads(r.read())
     except urllib.error.URLError as e:
         raise RuntimeError(
             f"Ollama unreachable at {OLLAMA_URL} ({e}). Start it with `ollama serve`, "
             f"and check `ollama list` includes {model}."
         ) from e
+
+
+def call_ollama(prompt: str, model: str = GENERATOR, timeout: int = 600) -> str:
+    """The reply text of one uncapped generation — what `judge.py` calls."""
+    return ollama_generate(prompt, model=model, timeout=timeout)["response"]
 
 
 def sample_queries(results: dict, qrels: dict, n: int, seed: int = 0) -> list[str]:
@@ -259,12 +280,15 @@ def context_for(results: dict, corpus: dict, query_id: str, n_context: int) -> t
 def generate_one(question: str, doc_ids: list[str], docs: list[dict],
                  query_id: str, model: str) -> Generation:
     """Prompt → model → parsed Generation. Traced by Weave when it is live."""
-    raw = call_ollama(build_prompt(question, docs), model=model)
+    reply = ollama_generate(build_prompt(question, docs), model=model,
+                            max_tokens=MAX_OUTPUT_TOKENS)
+    raw = reply["response"]
     answer, rationale = parse_answer(raw)
     refused = should_refuse((answer, rationale))
     return Generation(
         query_id=query_id, question=question, doc_ids=doc_ids, raw=raw,
         answer=REFUSAL if refused else answer, rationale=rationale, refused=refused,
+        truncated=reply.get("done_reason") == "length",
     )
 
 
@@ -357,12 +381,15 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
 
     unparsed = [g.query_id for g in gens if not g.refused and not g.answer.strip()]
     refusals = sum(g.refused for g in gens)
+    truncated = sum(g.truncated for g in gens)
     log.info("\n=== Phase 4a (%s, %d queries, top-%d context, %s, prompt %s) ===",
              dataset, len(gens), n_context, generator, PROMPT_VERSION)
     log.info("generated      : %d", len(gens))
     log.info("refused        : %d  (%.1f%% — the per-config metric D11 kept)",
              refusals, 100 * refusals / len(gens))
     log.info("no short answer: %d  (parse misses, not model failures)", len(unparsed))
+    log.info("hit output cap : %d  (ended at %d tokens, not by the model)",
+             truncated, MAX_OUTPUT_TOKENS)
     log.info("cache          : %s", path)
     log.info("\nNext: 4b generates from qrel-perfect context for the ceiling, "
              "then 4c validates a judge against the fixture before it scores any "

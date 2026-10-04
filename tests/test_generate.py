@@ -19,7 +19,9 @@ import json
 import pytest
 
 from retrieval_lab.cache import generation_cache_path, judgement_cache_path
+from retrieval_lab import generate
 from retrieval_lab.generate import (
+    MAX_OUTPUT_TOKENS,
     Generation,
     cached_generations,
     SENTINEL,
@@ -139,6 +141,74 @@ def test_cache_miss_writes_what_it_computed(tmp_path):
                      answer="a", rationale="s", refused=True)
     assert cached_generations(path, lambda: [row]) == [row]
     assert cached_generations(path, lambda: []) == [row]   # now a hit
+
+
+def test_a_batch_cached_before_the_truncated_field_still_loads(tmp_path):
+    """Every batch on disk predates the field, and none of them hit a cap."""
+    path = tmp_path / "gen.json"
+    path.write_text(json.dumps([{
+        "query_id": "q1", "question": "why?", "doc_ids": ["dA"], "raw": "raw text",
+        "answer": "because", "rationale": "dA says so", "refused": False,
+    }]))
+    (row,) = cached_generations(path, lambda: [])
+    assert row.truncated is False
+
+
+# ───────────────────────────── the output cap ─────────────────────────────
+#
+# A reply that never ends is not a parse miss and not a slow model: without a
+# cap it outlasts the request timeout, the batch aborts, and nothing is cached.
+# With one, the row survives — so the cap hit has to be recorded on it, or a
+# cut-off reply is indistinguishable from one the model simply wrote badly.
+
+class _Reply:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode()
+
+
+def _capture_requests(monkeypatch, payload):
+    sent = []
+
+    def fake_urlopen(req, timeout):
+        sent.append(json.loads(req.data))
+        return _Reply(payload)
+
+    monkeypatch.setattr(generate.urllib.request, "urlopen", fake_urlopen)
+    return sent
+
+
+def test_the_cap_is_sent_only_when_one_is_given(monkeypatch):
+    """`call_ollama` is the judge's path and must stay uncapped."""
+    sent = _capture_requests(monkeypatch, {"response": "ok", "done_reason": "stop"})
+    generate.ollama_generate("p", max_tokens=7)
+    assert generate.call_ollama("p") == "ok"
+    assert sent[0]["options"] == {"temperature": 0, "num_predict": 7}
+    assert sent[1]["options"] == {"temperature": 0}
+
+
+def test_generation_is_capped_and_a_cap_hit_is_recorded(monkeypatch):
+    looping = "<rationale>" + "the passage says so [1] " * 50
+    sent = _capture_requests(monkeypatch, {"response": looping, "done_reason": "length"})
+    row = generate.generate_one("q?", ["dA"], [{"title": "T", "text": "x"}], "q1", "m")
+    assert sent[0]["options"]["num_predict"] == MAX_OUTPUT_TOKENS
+    assert row.truncated is True
+    assert row.raw == looping                 # kept as emitted, like any other row
+    assert (row.answer, row.refused) == ("", False)
+
+
+def test_a_reply_the_model_ended_is_not_marked_truncated(monkeypatch):
+    _capture_requests(monkeypatch, {"response": WELL_FORMED, "done_reason": "stop"})
+    row = generate.generate_one("q?", ["dA"], [{"title": "T", "text": "x"}], "q1", "m")
+    assert (row.answer, row.truncated) == ("Nelson County", False)
 
 
 def _gen(qid, raw="raw", answer="a", refused=False):
