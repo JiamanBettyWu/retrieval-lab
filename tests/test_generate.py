@@ -151,7 +151,7 @@ def test_a_batch_cached_before_the_truncated_field_still_loads(tmp_path):
         "answer": "because", "rationale": "dA says so", "refused": False,
     }]))
     (row,) = cached_generations(path, lambda: [])
-    assert row.truncated is False
+    assert row.truncated is None        # not recorded is not the same as False
 
 
 # ───────────────────────────── the output cap ─────────────────────────────
@@ -211,9 +211,57 @@ def test_a_reply_the_model_ended_is_not_marked_truncated(monkeypatch):
     assert (row.answer, row.truncated) == ("Nelson County", False)
 
 
-def _gen(qid, raw="raw", answer="a", refused=False):
+def test_a_server_that_gives_no_stop_reason_is_recorded_as_unknown(monkeypatch):
+    _capture_requests(monkeypatch, {"response": WELL_FORMED})
+    row = generate.generate_one("q?", ["dA"], [{"title": "T", "text": "x"}], "q1", "m")
+    assert row.truncated is None
+
+
+def test_a_cut_off_reply_that_mentions_the_sentinel_is_not_a_refusal(monkeypatch):
+    """A refusal is a ruling the model finished making.
+
+    `should_refuse` accepts a sentinel in tagless text, so a loop that happens to
+    repeat the word would otherwise enter the refusal rate as a chosen refusal.
+    """
+    looping = "<rationale>" + f"this may be {SENTINEL} [1] " * 40
+    _capture_requests(monkeypatch, {"response": looping, "done_reason": "length"})
+    row = generate.generate_one("q?", ["dA"], [{"title": "T", "text": "x"}], "q1", "m")
+    assert (row.answer, row.refused, row.truncated) == ("", False, True)
+
+
+def test_a_refusal_the_model_finished_is_kept_even_if_cut_afterwards(monkeypatch):
+    raw = f"<rationale>not stated [1]</rationale>\n<answer>{SENTINEL}</answer>" + " and" * 40
+    _capture_requests(monkeypatch, {"response": raw, "done_reason": "length"})
+    row = generate.generate_one("q?", ["dA"], [{"title": "T", "text": "x"}], "q1", "m")
+    assert (row.refused, row.truncated) == (True, True)
+
+
+def test_cut_off_rows_are_not_counted_as_parse_misses():
+    rows = [_gen("q0", answer="", truncated=True)] + [_gen(f"q{i}") for i in range(1, 10)]
+    assert validate(rows) == []
+
+
+def test_a_batch_that_mostly_fails_to_terminate_is_named_as_such(tmp_path):
+    """Same guard as the parse-miss one, but it must not blame the parser."""
+    path = tmp_path / "gen.json"
+    rows = [_gen(f"q{i}", answer="", truncated=True) for i in range(5)]
+    with pytest.raises(AssertionError, match="not terminating"):
+        cached_generations(path, lambda: validate(rows) or rows)
+    assert not path.exists()
+
+
+def test_a_timeout_names_the_model_and_the_cleanup(monkeypatch):
+    def slow(req, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(generate.urllib.request, "urlopen", slow)
+    with pytest.raises(RuntimeError, match="ollama stop m"):
+        generate.ollama_generate("p", model="m", timeout=1)
+
+
+def _gen(qid, raw="raw", answer="a", refused=False, truncated=False):
     return Generation(query_id=qid, question="q?", doc_ids=["dA"], raw=raw,
-                      answer=answer, rationale="s", refused=refused)
+                      answer=answer, rationale="s", refused=refused, truncated=truncated)
 
 
 def test_a_poisoned_batch_is_never_written_to_disk(tmp_path):

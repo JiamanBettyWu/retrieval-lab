@@ -61,6 +61,11 @@ PROMPT_VERSION = "v2"
 # The cap exists for the reply that never ends: a repetition loop inside
 # <rationale> runs until the context window is full, outlasts the request
 # timeout, and takes the whole batch down with it.
+#
+# Not in the cache key: at 600 it cuts nothing a model would have finished, so a
+# capped batch and an uncapped one hold the same finished replies. LOWERING it
+# to where it could cut a real reply changes what the generator can return —
+# bump PROMPT_VERSION with it, exactly as for a prompt edit.
 MAX_OUTPUT_TOKENS = 600
 
 REFUSAL = "__REFUSED__"
@@ -77,8 +82,10 @@ class Generation:
     answer: str             # the short answer, for token-F1 against gold
     rationale: str          # the model's supporting text, for faithfulness
     refused: bool
-    truncated: bool = False  # the output cap ended it, not the model; defaulted
-                             # so batches cached before the field existed load
+    # True: the token limit ended the reply, not the model. None: not recorded —
+    # a batch cached before the field existed, or a server that did not say why
+    # it stopped. Unknown is kept apart from False on purpose.
+    truncated: bool | None = None
 
 
 # ─────────────────────────── Betty's stubs ───────────────────────────
@@ -235,6 +242,16 @@ def ollama_generate(prompt: str, model: str = GENERATOR, timeout: int = 600,
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
+    except urllib.error.HTTPError as e:      # a URLError subclass: catch it first
+        raise RuntimeError(
+            f"Ollama answered HTTP {e.code} for {model}: "
+            f"{e.read().decode(errors='replace')[:200]}"
+        ) from e
+    except TimeoutError as e:                # raised by read(), and not a URLError
+        raise RuntimeError(
+            f"{model} produced no complete reply within {timeout}s. The server may "
+            f"still be generating it: run `ollama stop {model}` before retrying."
+        ) from e
     except urllib.error.URLError as e:
         raise RuntimeError(
             f"Ollama unreachable at {OLLAMA_URL} ({e}). Start it with `ollama serve`, "
@@ -284,11 +301,18 @@ def generate_one(question: str, doc_ids: list[str], docs: list[dict],
                             max_tokens=MAX_OUTPUT_TOKENS)
     raw = reply["response"]
     answer, rationale = parse_answer(raw)
+    done = reply.get("done_reason")
+    truncated = None if done is None else done == "length"
     refused = should_refuse((answer, rationale))
+    if truncated and not answer:
+        # Cut off before any <answer>: the model never got to rule either way.
+        # `should_refuse` reads a sentinel in tagless text as a refusal, which is
+        # right for a reply the model finished and wrong for one it did not.
+        refused = False
     return Generation(
         query_id=query_id, question=question, doc_ids=doc_ids, raw=raw,
         answer=REFUSAL if refused else answer, rationale=rationale, refused=refused,
-        truncated=reply.get("done_reason") == "length",
+        truncated=truncated,
     )
 
 
@@ -333,7 +357,19 @@ def validate(gens: list[Generation]) -> list[str]:
     # A parser that silently misses looks exactly like a model that answers
     # badly, and only one of those is worth debugging. Same shape as
     # NDCG@10 = 0.0000 meaning wrong doc ids rather than a weak model.
-    unparsed = [g.query_id for g in gens if not g.refused and not g.answer.strip()]
+    # A reply the token limit cut short has no short answer either, but for a
+    # different reason and with a different fix, so it gets its own count and
+    # its own message rather than being blamed on the parser.
+    cut = [g.query_id for g in gens if g.truncated and not g.answer.strip()]
+    if len(cut) > 0.2 * len(gens):
+        raise AssertionError(
+            f"{len(cut)}/{len(gens)} replies were cut off at the output cap before "
+            "an answer — the generator is not terminating on this prompt, which is "
+            "not a parser problem. Nothing cached."
+        )
+
+    unparsed = [g.query_id for g in gens
+                if not g.refused and not g.answer.strip() and not g.truncated]
     if len(unparsed) > 0.2 * len(gens):
         raise AssertionError(
             f"{len(unparsed)}/{len(gens)} answers produced no short answer — "
@@ -379,17 +415,20 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
             f"queries — {path.name} was written under different sampling"
         )
 
-    unparsed = [g.query_id for g in gens if not g.refused and not g.answer.strip()]
+    unparsed = [g.query_id for g in gens
+                if not g.refused and not g.answer.strip() and not g.truncated]
     refusals = sum(g.refused for g in gens)
-    truncated = sum(g.truncated for g in gens)
+    truncated = sum(g.truncated is True for g in gens)
+    unrecorded = sum(g.truncated is None for g in gens)
     log.info("\n=== Phase 4a (%s, %d queries, top-%d context, %s, prompt %s) ===",
              dataset, len(gens), n_context, generator, PROMPT_VERSION)
     log.info("generated      : %d", len(gens))
     log.info("refused        : %d  (%.1f%% — the per-config metric D11 kept)",
              refusals, 100 * refusals / len(gens))
     log.info("no short answer: %d  (parse misses, not model failures)", len(unparsed))
-    log.info("hit output cap : %d  (ended at %d tokens, not by the model)",
-             truncated, MAX_OUTPUT_TOKENS)
+    log.info("cut off        : %d  (the token limit ended the reply, not the model)%s",
+             truncated,
+             f"; not recorded for {unrecorded} rows" if unrecorded else "")
     log.info("cache          : %s", path)
     log.info("\nNext: 4b generates from qrel-perfect context for the ceiling, "
              "then 4c validates a judge against the fixture before it scores any "
