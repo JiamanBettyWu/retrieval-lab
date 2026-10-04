@@ -19,7 +19,9 @@ import json
 import pytest
 
 from retrieval_lab.cache import generation_cache_path, judgement_cache_path
+from retrieval_lab import generate
 from retrieval_lab.generate import (
+    MAX_OUTPUT_TOKENS,
     Generation,
     cached_generations,
     SENTINEL,
@@ -141,9 +143,125 @@ def test_cache_miss_writes_what_it_computed(tmp_path):
     assert cached_generations(path, lambda: []) == [row]   # now a hit
 
 
-def _gen(qid, raw="raw", answer="a", refused=False):
+def test_a_batch_cached_before_the_truncated_field_still_loads(tmp_path):
+    """Every batch on disk predates the field, and none of them hit a cap."""
+    path = tmp_path / "gen.json"
+    path.write_text(json.dumps([{
+        "query_id": "q1", "question": "why?", "doc_ids": ["dA"], "raw": "raw text",
+        "answer": "because", "rationale": "dA says so", "refused": False,
+    }]))
+    (row,) = cached_generations(path, lambda: [])
+    assert row.truncated is None        # not recorded is not the same as False
+
+
+# ───────────────────────────── the output cap ─────────────────────────────
+#
+# A reply that never ends is not a parse miss and not a slow model: without a
+# cap it outlasts the request timeout, the batch aborts, and nothing is cached.
+# With one, the row survives — so the cap hit has to be recorded on it, or a
+# cut-off reply is indistinguishable from one the model simply wrote badly.
+
+class _Reply:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode()
+
+
+def _capture_requests(monkeypatch, payload):
+    sent = []
+
+    def fake_urlopen(req, timeout):
+        sent.append(json.loads(req.data))
+        return _Reply(payload)
+
+    monkeypatch.setattr(generate.urllib.request, "urlopen", fake_urlopen)
+    return sent
+
+
+def test_the_cap_is_sent_only_when_one_is_given(monkeypatch):
+    """`call_ollama` is the judge's path and must stay uncapped."""
+    sent = _capture_requests(monkeypatch, {"response": "ok", "done_reason": "stop"})
+    generate.ollama_generate("p", max_tokens=7)
+    assert generate.call_ollama("p") == "ok"
+    assert sent[0]["options"] == {"temperature": 0, "num_predict": 7}
+    assert sent[1]["options"] == {"temperature": 0}
+
+
+def test_generation_is_capped_and_a_cap_hit_is_recorded(monkeypatch):
+    looping = "<rationale>" + "the passage says so [1] " * 50
+    sent = _capture_requests(monkeypatch, {"response": looping, "done_reason": "length"})
+    row = generate.generate_one("q?", ["dA"], [{"title": "T", "text": "x"}], "q1", "m")
+    assert sent[0]["options"]["num_predict"] == MAX_OUTPUT_TOKENS
+    assert row.truncated is True
+    assert row.raw == looping                 # kept as emitted, like any other row
+    assert (row.answer, row.refused) == ("", False)
+
+
+def test_a_reply_the_model_ended_is_not_marked_truncated(monkeypatch):
+    _capture_requests(monkeypatch, {"response": WELL_FORMED, "done_reason": "stop"})
+    row = generate.generate_one("q?", ["dA"], [{"title": "T", "text": "x"}], "q1", "m")
+    assert (row.answer, row.truncated) == ("Nelson County", False)
+
+
+def test_a_server_that_gives_no_stop_reason_is_recorded_as_unknown(monkeypatch):
+    _capture_requests(monkeypatch, {"response": WELL_FORMED})
+    row = generate.generate_one("q?", ["dA"], [{"title": "T", "text": "x"}], "q1", "m")
+    assert row.truncated is None
+
+
+def test_a_cut_off_reply_that_mentions_the_sentinel_is_not_a_refusal(monkeypatch):
+    """A refusal is a ruling the model finished making.
+
+    `should_refuse` accepts a sentinel in tagless text, so a loop that happens to
+    repeat the word would otherwise enter the refusal rate as a chosen refusal.
+    """
+    looping = "<rationale>" + f"this may be {SENTINEL} [1] " * 40
+    _capture_requests(monkeypatch, {"response": looping, "done_reason": "length"})
+    row = generate.generate_one("q?", ["dA"], [{"title": "T", "text": "x"}], "q1", "m")
+    assert (row.answer, row.refused, row.truncated) == ("", False, True)
+
+
+def test_a_refusal_the_model_finished_is_kept_even_if_cut_afterwards(monkeypatch):
+    raw = f"<rationale>not stated [1]</rationale>\n<answer>{SENTINEL}</answer>" + " and" * 40
+    _capture_requests(monkeypatch, {"response": raw, "done_reason": "length"})
+    row = generate.generate_one("q?", ["dA"], [{"title": "T", "text": "x"}], "q1", "m")
+    assert (row.refused, row.truncated) == (True, True)
+
+
+def test_cut_off_rows_are_not_counted_as_parse_misses():
+    rows = [_gen("q0", answer="", truncated=True)] + [_gen(f"q{i}") for i in range(1, 10)]
+    assert validate(rows) == []
+
+
+def test_a_batch_that_mostly_fails_to_terminate_is_named_as_such(tmp_path):
+    """Same guard as the parse-miss one, but it must not blame the parser."""
+    path = tmp_path / "gen.json"
+    rows = [_gen(f"q{i}", answer="", truncated=True) for i in range(5)]
+    with pytest.raises(AssertionError, match="not terminating"):
+        cached_generations(path, lambda: validate(rows) or rows)
+    assert not path.exists()
+
+
+def test_a_timeout_names_the_model_and_the_cleanup(monkeypatch):
+    def slow(req, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(generate.urllib.request, "urlopen", slow)
+    with pytest.raises(RuntimeError, match="ollama stop m"):
+        generate.ollama_generate("p", model="m", timeout=1)
+
+
+def _gen(qid, raw="raw", answer="a", refused=False, truncated=False):
     return Generation(query_id=qid, question="q?", doc_ids=["dA"], raw=raw,
-                      answer=answer, rationale="s", refused=refused)
+                      answer=answer, rationale="s", refused=refused, truncated=truncated)
 
 
 def test_a_poisoned_batch_is_never_written_to_disk(tmp_path):
