@@ -682,6 +682,13 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
                             seed, excluded)
     path = sheet_path(dataset, n_queries, seed, excluded)
 
+    if (label or check) and not path.exists():
+        flags = "".join(f" --exclude {e}" for e in exclude or [])
+        raise FileNotFoundError(
+            f"no sheet at {path} — write it first with:\n"
+            f"  python -m retrieval_lab.fixture --n-queries {n_queries} --seed {seed}{flags}"
+        )
+
     if label:
         load_labels(path, gens)     # anchor check BEFORE editing: a sheet whose
         label_interactive(path)     # batch was regenerated must not be labelled
