@@ -22,6 +22,7 @@ python -m retrieval_lab.rerank   --dataset nfcorpus --breakdown   # + the per-bu
 
 python -m retrieval_lab.hotpot_pool                               # Phase 4: build hotpotqa-distractor-pool (~27MB, once)
 python -m retrieval_lab.generate --n-queries 50                   # Phase 4a: generate answers (needs `ollama serve`)
+python -m retrieval_lab.generate --n-queries 100 --seed 3 --exclude cache/gen__…seed0.json   # ... a batch sharing no question with the named ones (repeatable; pass the same --exclude to fixture/judge)
 python -m retrieval_lab.fixture --n-queries 30 --seed 1           # Phase 4c.1: write the hand-labelling sheet
 python -m retrieval_lab.fixture --n-queries 30 --seed 1 --label   # ... label it (resumable, one row at a time)
 python -m retrieval_lab.fixture --n-queries 30 --seed 1 --check   # ... verify the labels against the batch

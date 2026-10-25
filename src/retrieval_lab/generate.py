@@ -14,8 +14,8 @@ generator is not, even at temperature 0 (batching, kv-cache layout and
 quantisation all leak in), so two runs of "the same" config differ slightly and
 there is no diff that proves staleness. The key therefore covers everything that
 changes what the model was asked: dataset, retriever, top_k, context size,
-generator, and `prompt_version` — plus `n_queries` and `seed`, which change
-which questions were asked rather than how. See `cache.generation_cache_path`.
+generator, and `prompt_version` — plus `n_queries`, `seed` and any excluded
+batches, which change which questions were asked rather than how. See `cache.generation_cache_path`.
 
 Scope: this module generates. It does not score. Faithfulness/relevance judging
 is 4c and lands in `judge.py`; correctness (token-F1 against HotpotQA's gold
@@ -42,8 +42,10 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
-from .cache import CACHE_DIR, cached_retrieval, generation_cache_path
+from .cache import (CACHE_DIR, cached_retrieval, exclusion_record_path,
+                    exclusion_tag, generation_cache_path)
 from .data import load_beir
 from .observability import op
 from .retrieve import BI_ENCODER, MODEL_HELP, load_encoder, retrieve
@@ -264,7 +266,17 @@ def call_ollama(prompt: str, model: str = GENERATOR, timeout: int = 600) -> str:
     return ollama_generate(prompt, model=model, timeout=timeout)["response"]
 
 
-def sample_queries(results: dict, qrels: dict, n: int, seed: int = 0) -> list[str]:
+def eligible_queries(results: dict, qrels: dict) -> list[str]:
+    """The pool a sample is drawn from, sorted.
+
+    Only queries with labels are eligible: an unlabelled one can be generated
+    for but neither its oracle context nor its correctness score exists.
+    """
+    return sorted(q for q in results if qrels.get(q))
+
+
+def sample_queries(results: dict, qrels: dict, n: int, seed: int = 0,
+                   exclude=frozenset()) -> list[str]:
     """Pick n query ids to generate for — deterministically.
 
     The full pool is 7,405 questions; Phase 4 scores a sample because judging is
@@ -273,13 +285,74 @@ def sample_queries(results: dict, qrels: dict, n: int, seed: int = 0) -> list[st
     corpus was built), so a rerun scores the SAME questions rather than a fresh
     sample that would quietly change every number.
 
-    Only queries with labels are eligible: an unlabelled one can be generated
-    for but neither its oracle context nor its correctness score exists.
+    `exclude` removes earlier batches' ids from the pool BEFORE the draw, which
+    makes a held-out batch disjoint by construction rather than by choosing a
+    different seed and hoping. It also changes every pick, not just the ones
+    that collided — the draw is over a different list — so it is part of the
+    cache key (`cache.generation_cache_path`). Empty, it is today's draw exactly.
     """
-    eligible = sorted(q for q in results if qrels.get(q))
-    if n >= len(eligible):
-        return eligible
-    return sorted(random.Random(seed).sample(eligible, n))
+    pool = [q for q in eligible_queries(results, qrels) if q not in exclude]
+    if n >= len(pool):
+        return pool
+    return sorted(random.Random(seed).sample(pool, n))
+
+
+def load_exclusions(paths) -> dict[str, list[str]]:
+    """Read `--exclude` sources into {source: sorted query ids}.
+
+    Three shapes, by suffix: `.json` is a generation batch from `cache/` (a list
+    of rows), `.jsonl` is a labelling sheet (one row per line), anything else is
+    plain text with one query id per line (`#` starts a comment). Kept per source
+    so the exclusion record can say where each id came from.
+    """
+    out = {}
+    for p in map(Path, paths):
+        text = p.read_text()
+        try:
+            if p.suffix == ".json":
+                ids = [r["query_id"] for r in json.loads(text)]
+            elif p.suffix == ".jsonl":
+                ids = [json.loads(line)["query_id"]
+                       for line in text.splitlines() if line.strip()]
+            else:
+                ids = [line.strip() for line in text.splitlines()
+                       if line.strip() and not line.lstrip().startswith("#")]
+        except (KeyError, TypeError) as e:
+            raise ValueError(
+                f"{p} is not a generation batch or a labelling sheet — no "
+                f"`query_id` in its rows ({e!r})"
+            ) from e
+        if not ids:
+            raise ValueError(f"{p} holds no query ids — wrong file?")
+        out[str(p)] = sorted(set(ids))
+    return out
+
+
+def write_exclusion_record(path: Path, sources: dict[str, list[str]],
+                           excluded: frozenset, n_in_pool: int) -> None:
+    """Record what a batch's `__ex<hash>` suffix stands for, beside the batch.
+
+    Written once, with the batch. If a record is already there, its ids must be
+    the ones that produced this key: the hash cannot be read back, so this file
+    is the only evidence of what the batch is disjoint from.
+    """
+    record_path = exclusion_record_path(path)
+    if record_path.exists():
+        on_disk = json.loads(record_path.read_text())["query_ids"]
+        if on_disk != sorted(excluded):
+            raise AssertionError(
+                f"{record_path.name} lists {len(on_disk)} excluded ids, but this "
+                f"run excludes {len(excluded)} different ones under the same key"
+            )
+        return
+    record_path.write_text(json.dumps({
+        "batch": path.name,
+        "sources": {src: len(ids) for src, ids in sources.items()},
+        "n_excluded": len(excluded),
+        "n_excluded_in_pool": n_in_pool,
+        "query_ids": sorted(excluded),
+    }, indent=1))
+    log.info("exclusion record -> %s", record_path)
 
 
 def context_for(results: dict, corpus: dict, query_id: str, n_context: int) -> tuple[list[str], list[dict]]:
@@ -379,8 +452,11 @@ def validate(gens: list[Generation]) -> list[str]:
 
 
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
-         refresh: bool, model: str = BI_ENCODER, generator: str = GENERATOR) -> None:
+         refresh: bool, model: str = BI_ENCODER, generator: str = GENERATOR,
+         exclude: list[str] | None = None) -> None:
     corpus, queries, qrels = load_beir(dataset)
+    sources = load_exclusions(exclude or [])
+    excluded = frozenset().union(*sources.values())
 
     results = cached_retrieval(
         dataset, model, top_k,
@@ -388,9 +464,21 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
         refresh=False,  # never rebuild retrieval as a side effect of generating
     )
 
-    qids = sample_queries(results, qrels, n_queries, seed)
+    n_in_pool = len(excluded & set(eligible_queries(results, qrels)))
+    if excluded and not n_in_pool:
+        # Excluding nothing would still change the cache key, and silently: a
+        # "held-out" batch that is in fact the plain draw under a new name.
+        raise ValueError(
+            f"none of the {len(excluded)} excluded ids is in {dataset}'s pool — "
+            "the --exclude files are from a different dataset?"
+        )
+    if excluded:
+        log.info("excluding %d query ids (%d in the eligible pool) from %d source(s)",
+                 len(excluded), n_in_pool, len(sources))
+
+    qids = sample_queries(results, qrels, n_queries, seed, exclude=excluded)
     path = generation_cache_path(dataset, model, top_k, n_context, generator,
-                                 PROMPT_VERSION, n_queries, seed)
+                                 PROMPT_VERSION, n_queries, seed, excluded)
 
     def compute():
         gens = []
@@ -414,6 +502,15 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
             f"cache holds {len(gens)} answers but this config asks for {len(qids)} "
             f"queries — {path.name} was written under different sampling"
         )
+    # The draw cannot return an excluded id; a cached file can, if it was
+    # written by hand or renamed onto this key. Cheap, and it is the claim.
+    leaked = sorted({g.query_id for g in gens} & excluded)
+    if leaked:
+        raise AssertionError(
+            f"{path.name} holds {len(leaked)} excluded query ids (e.g. {leaked[:3]})"
+        )
+    if excluded:
+        write_exclusion_record(path, sources, excluded, n_in_pool)
 
     unparsed = [g.query_id for g in gens
                 if not g.refused and not g.answer.strip() and not g.truncated]
@@ -422,6 +519,9 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
     unrecorded = sum(g.truncated is None for g in gens)
     log.info("\n=== Phase 4a (%s, %d queries, top-%d context, %s, prompt %s) ===",
              dataset, len(gens), n_context, generator, PROMPT_VERSION)
+    if excluded:
+        log.info("excluded       : %d ids, key suffix __ex%s (see %s)", len(excluded),
+                 exclusion_tag(excluded), exclusion_record_path(path).name)
     log.info("generated      : %d", len(gens))
     log.info("refused        : %d  (%.1f%% — the per-config metric D11 kept)",
              refusals, 100 * refusals / len(gens))
@@ -446,9 +546,13 @@ if __name__ == "__main__":
                    help="how many retrieved docs go in the prompt")
     p.add_argument("--top-k", type=int, default=100, help="retrieval depth (cached)")
     p.add_argument("--seed", type=int, default=0, help="fixes WHICH questions are sampled")
+    p.add_argument("--exclude", action="append", default=[], metavar="PATH",
+                   help="leave out every query id in this earlier batch (cache .json), "
+                        "labelling sheet (.jsonl) or id list (one per line); repeatable. "
+                        "Part of the cache key.")
     p.add_argument("--refresh", action="store_true", help="regenerate, ignoring the cache")
     p.add_argument("--model", default=BI_ENCODER, help=MODEL_HELP)
     p.add_argument("--generator", default=GENERATOR)
     args = p.parse_args()
     main(args.dataset, args.n_queries, args.n_context, args.top_k, args.seed,
-         args.refresh, args.model, args.generator)
+         args.refresh, args.model, args.generator, args.exclude)

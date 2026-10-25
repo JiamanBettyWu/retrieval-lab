@@ -10,6 +10,7 @@ The key covers dataset + model + top_k, but NOT the contents of retrieve().
 Change that function and the cache goes stale silently — pass refresh=True
 (or `--refresh`) after touching retrieval.
 """
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -49,9 +50,22 @@ def cached_retrieval(dataset: str, model_name: str, top_k: int, compute, refresh
     return results
 
 
+def exclusion_tag(excluded) -> str:
+    """A short, stable name for a set of excluded query ids; "" for no exclusion.
+
+    Hashes the ids themselves, not the files they came from: excluding the v1
+    and the v2 file of one draw is the same exclusion and must name the same
+    batch. `hashlib`, not `hash()` — Python salts `hash()` per process, and the
+    point of the key is that another machine finds the same file.
+    """
+    if not excluded:
+        return ""
+    return hashlib.sha256("\n".join(sorted(excluded)).encode()).hexdigest()[:10]
+
+
 def generation_cache_path(dataset: str, retriever: str, top_k: int, n_context: int,
                           generator: str, prompt_version: str, n_queries: int,
-                          seed: int) -> Path:
+                          seed: int, excluded=frozenset()) -> Path:
     """One file per thing that changes what the generator was asked.
 
     Phase 4 needs a stricter key than retrieval does, for a reason retrieval
@@ -72,12 +86,31 @@ def generation_cache_path(dataset: str, retriever: str, top_k: int, n_context: i
     overwrote the batch being scored. Now every distinct draw is its own file and
     a fixture set can sit beside the set it validates a judge for.
 
+    **`excluded` joins the key for the same reason.** A draw that leaves out
+    earlier batches holds different questions from the plain draw with the same
+    `(n, seed)`, so without it the plain batch would be served as a cache HIT.
+    The suffix appears only when something is excluded, so every batch written
+    before exclusion existed keeps its name — and the labels and judgements
+    keyed off those names stay valid. The hash is opaque on purpose (a list of
+    ids does not fit in a filename); `exclusion_record_path` says what it hides.
+
     The judge model IDs are deliberately NOT here — see `judgement_cache_path`.
     """
     slug = lambda s: s.replace("/", "__").replace(":", "-")
+    tag = exclusion_tag(excluded)
     return (CACHE_DIR / f"gen__{dataset}__{slug(retriever)}__top{top_k}"
                         f"__ctx{n_context}__{slug(generator)}__{prompt_version}"
-                        f"__n{n_queries}__seed{seed}.json")
+                        f"__n{n_queries}__seed{seed}"
+                        f"{f'__ex{tag}' if tag else ''}.json")
+
+
+def exclusion_record_path(generation_path: Path) -> Path:
+    """Where a batch drawn with exclusions records WHAT it excluded.
+
+    Named `exclude__…`, not `gen__…`, so nothing that globs for generation
+    batches (`fixture.overlap_with`) mistakes the record for one.
+    """
+    return generation_path.with_name(f"exclude__{generation_path.name}")
 
 
 def judgement_cache_path(generation_key: str, judge: str, rubric_version: str) -> Path:
