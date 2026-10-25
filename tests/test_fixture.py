@@ -329,3 +329,17 @@ def test_an_excluding_draw_gets_its_own_sheet():
     plain = fixture.sheet_path("ds", 30, 3)
     assert fixture.sheet_path("ds", 30, 3, frozenset()) == plain
     assert fixture.sheet_path("ds", 30, 3, frozenset({"q1"})) != plain
+
+
+def test_a_hint_names_every_non_default_key_component():
+    """A printed next-step command that drops one points at a different batch."""
+    from retrieval_lab.generate import GENERATOR
+    from retrieval_lab.retrieve import BI_ENCODER
+    plain = fixture.batch_flags("hotpotqa-distractor-pool", 30, 10, 100, 2,
+                                BI_ENCODER, GENERATOR, None)
+    assert plain == "--n-queries 30 --seed 2"
+    other = fixture.batch_flags("fiqa", 30, 5, 50, 2, "my/encoder", "llama3.1:8b",
+                                ["cache/a b.json"])
+    for part in ("--dataset fiqa", "--n-context 5", "--top-k 50", "--model my/encoder",
+                 "--generator llama3.1:8b", "--exclude 'cache/a b.json'"):
+        assert part in other

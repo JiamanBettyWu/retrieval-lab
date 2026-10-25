@@ -26,7 +26,8 @@ def gen(query_id, refused=True, truncated=False, raw=REFUSED_RAW):
     return Generation(query_id=query_id, question=f"QUESTION-{query_id}?",
                       doc_ids=["dA", "dB", "dC"], raw=raw,
                       answer=REFUSAL if refused else "Oslo",
-                      rationale="r", refused=refused, truncated=truncated)
+                      rationale="The passages do not name the architect.",
+                      refused=refused, truncated=truncated)
 
 
 GENS = [gen("q1"), gen("q2"), gen("q3", refused=False), gen("q4", truncated=None)]
@@ -100,8 +101,9 @@ def test_annotators_get_separate_files(tmp_path):
     b = twopass.twopass_path(tmp_path, gp, "volunteer1")
     assert a != b and a.parent == b.parent == tmp_path
     assert "seed2__exabc" in a.name            # the batch key carries over whole
-    with pytest.raises(ValueError):
-        twopass.twopass_path(tmp_path, gp, "../elsewhere")
+    for bad in ("../elsewhere", "betty\n", ""):
+        with pytest.raises(ValueError):
+            twopass.twopass_path(tmp_path, gp, bad)
 
 
 # ─────────────────────────── what is shown ───────────────────────────
@@ -112,6 +114,12 @@ def test_pass_a_shows_no_passages_and_no_stratum(sheet):
     assert "The passages do not name the architect." in screen.text
     assert "PASSAGE-TEXT" not in screen.text
     assert "gold" not in screen.text.lower()
+
+
+def test_newlines_in_a_passage_keep_its_indent(sheet):
+    row = dict(rows(sheet)[0], passages=["[1] T. first line\nsecond line"])
+    out = twopass.render(row, "B")
+    assert "  [1] T. first line\n  second line" in out
 
 
 def test_the_internal_refusal_marker_is_never_shown(sheet):
@@ -194,6 +202,25 @@ def test_pass_a_is_read_only_once_pass_b_has_begun(sheet):
         label(sheet, "a", "c")
 
 
+def test_a_changed_pass_a_label_is_caught_once_pass_b_has_begun(sheet):
+    """Not just a blanked label: an accept edited to reject is complete and
+    in-vocabulary, so only the fingerprint taken as pass B began can see it."""
+    label(sheet, *["a", "c"] * 3)
+    label(sheet, "k", "q")
+    data = rows(sheet)
+    data[0]["refusal_ok_response"] = False              # accept -> reject, by hand
+    sheet.write_text("\n".join(json.dumps(r) for r in data) + "\n")
+    with pytest.raises(AssertionError, match="changed after pass B began"):
+        label(sheet, "k")
+    with pytest.raises(AssertionError, match="changed after pass B began"):
+        twopass.validate_twopass(data, {"q1", "q2", "q4"})
+
+
+def test_pass_a_can_change_freely_before_pass_b_begins(sheet):
+    label(sheet, *["a", "c"] * 3)
+    assert {r["pass_a_lock"] for r in rows(sheet)} == {None}
+
+
 def test_a_different_guide_version_is_refused(sheet):
     with pytest.raises(AssertionError, match="guide version"):
         twopass.label_twopass(sheet, "betty", "0.2", ask=replies(), say=Screen())
@@ -220,10 +247,15 @@ def test_quitting_halfway_through_a_row_keeps_no_partial_answer(sheet):
     assert rows(sheet)[0]["refusal_ok_response"] is None
 
 
-def test_seconds_run_from_display_to_the_last_answer(sheet):
+def test_seconds_run_from_display_to_the_label_not_the_follow_up(sheet):
+    """The follow-up (confidence, checkbox) is not timed: the checkbox is asked
+    only on over-refusals, so timing it would make pass B's seconds depend on
+    the label itself."""
     label(sheet, "a", "c", "q")
-    # ticking clock: start=2.0, end=4.0
-    assert rows(sheet)[0]["seconds_response"] == 2.0
+    assert rows(sheet)[0]["seconds_response"] == 2.0    # ticks: start 2, label 4
+    label(sheet, *["a", "c"] * 2)
+    label(sheet, "o", "y", "k", "k")
+    assert [r["seconds_passages"] for r in rows(sheet)] == [2.0, 2.0, 2.0]
 
 
 def test_an_unrecognised_key_asks_again(sheet):
@@ -241,6 +273,12 @@ def finished(sheet):
 
 def test_a_finished_file_passes(sheet):
     twopass.validate_twopass(finished(sheet), {"q1", "q2", "q4"})
+
+
+def test_a_duplicated_row_fails(sheet):
+    data = finished(sheet)
+    with pytest.raises(AssertionError, match="duplicated"):
+        twopass.validate_twopass(data + [data[0]], {"q1", "q2", "q4"})
 
 
 def test_a_missing_row_fails(sheet):

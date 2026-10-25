@@ -30,19 +30,20 @@ both options in the labelling guide's words, every row, and the keys are the
 words' initials rather than y/n.
 """
 import argparse
+import hashlib
 import json
 import logging
 import re
+import shlex
 import textwrap
 import time
 from pathlib import Path
 
 from .cache import generation_cache_path
 from .data import load_beir
-from .fixture import (LABELS_DIR, gold_in_context, load_generations, load_labels,
-                      raw_sha, save_rows)
-from .generate import (GENERATOR, PROMPT_VERSION, Generation, excluded_ids,
-                       parse_answer)
+from .fixture import (LABELS_DIR, batch_flags, gold_in_context, load_generations,
+                      load_labels, raw_sha, save_rows)
+from .generate import GENERATOR, PROMPT_VERSION, Generation, excluded_ids
 from .retrieve import BI_ENCODER, MODEL_HELP
 
 log = logging.getLogger("retrieval_lab")
@@ -70,13 +71,13 @@ COMMON_KNOWLEDGE_QUESTION = ("Does reaching the answer need a fact that is not i
                              "passages but that an average adult would know?\n"
                              "    y = yes   |   n = no")
 
-ANNOTATOR_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+ANNOTATOR_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def twopass_path(out_dir: Path, generation_path: Path, annotator: str) -> Path:
     """One file per (batch, annotator). The batch's own name is the key, so
     every key component — exclusions included — carries over unchanged."""
-    if not ANNOTATOR_RE.match(annotator):
+    if not ANNOTATOR_RE.fullmatch(annotator):
         raise ValueError(f"annotator {annotator!r}: use letters, digits, - or _ only")
     batch = generation_path.stem.removeprefix("gen__")
     return Path(out_dir) / f"twopass__{batch}__{annotator}.jsonl"
@@ -102,10 +103,13 @@ def eligible_rows(gens: list[Generation]) -> tuple[list[Generation], dict[str, i
 def model_reply(gen: Generation) -> tuple[str, str]:
     """The model's own answer text and rationale, as it wrote them.
 
-    Re-parsed from `raw` because `Generation.answer` holds the internal
-    `__REFUSED__` marker on a refusal, which must never reach the screen.
+    The answer is read from `raw` because `Generation.answer` holds the internal
+    `__REFUSED__` marker on a refusal, which must never reach the screen. Same
+    rule as `parse_answer` (first `<answer>` tag), without its error log: a
+    tagless refusal is expected here, not a parse failure.
     """
-    return parse_answer(gen.raw)
+    found = re.search(r"<answer>(.*?)</answer>", gen.raw, flags=re.DOTALL)
+    return (found.group(1).strip() if found else ""), gen.rationale
 
 
 def twopass_row(gen: Generation, corpus: dict, qrels: dict, annotator: str,
@@ -127,6 +131,7 @@ def twopass_row(gen: Generation, corpus: dict, qrels: dict, annotator: str,
         "passages": [f"[{i}] {corpus[d]['title']}. {corpus[d]['text']}"
                      for i, d in enumerate(gen.doc_ids, 1)],
         **{f: None for f in PASS_A_FIELDS + PASS_B_FIELDS},
+        "pass_a_lock": None,
     }
 
 
@@ -163,11 +168,43 @@ def pass_b_started(rows: list[dict]) -> bool:
     return any(row[f] is not None for row in rows for f in PASS_B_FIELDS)
 
 
+def pass_a_digest(rows: list[dict]) -> str:
+    """A fingerprint of every pass A label in the file."""
+    labels = sorted((r["query_id"], *(r[f] for f in PASS_A_FIELDS)) for r in rows)
+    return hashlib.sha256(json.dumps(labels).encode()).hexdigest()[:16]
+
+
+def lock_pass_a(rows: list[dict]) -> None:
+    """Stamp the pass A fingerprint on every row, once, as pass B begins."""
+    digest = pass_a_digest(rows)
+    for r in rows:
+        r["pass_a_lock"] = digest
+
+
+def check_lock(rows: list[dict], required: bool = False) -> None:
+    """Pass A must be exactly as it was when pass B began.
+
+    Catches a CHANGED pass A label, not just a blanked one: an accept edited to
+    reject after the passages were seen is in-vocabulary and complete, so
+    nothing else would notice it.
+    """
+    locks = {r.get("pass_a_lock") for r in rows}
+    if locks == {None}:
+        if required:
+            raise AssertionError("pass B is complete but pass A was never locked")
+        return
+    if len(locks) != 1 or locks != {pass_a_digest(rows)}:
+        raise AssertionError(
+            "pass A labels differ from the ones recorded when pass B began — pass A "
+            "was changed after pass B began. Restore the file from a copy."
+        )
+
+
 def current_pass(rows: list[dict]) -> str | None:
     """"A", "B", or None when both passes are complete.
 
-    Raises if a pass B label exists beside an incomplete pass A — the file was
-    edited by hand after pass B began, which is exactly what the lock forbids.
+    Raises if pass A changed after pass B began — a blanked label (pass B labels
+    beside an incomplete pass A) or an edited one (`check_lock`).
     """
     if not all(pass_a_done(r) for r in rows):
         if pass_b_started(rows):
@@ -176,6 +213,7 @@ def current_pass(rows: list[dict]) -> str | None:
                 "was changed after pass B began. Restore the file from a copy."
             )
         return "A"
+    check_lock(rows)
     if not all(pass_b_done(r) for r in rows):
         return "B"
     return None
@@ -198,9 +236,13 @@ def check_header(rows: list[dict], annotator: str, guide_version: str) -> None:
 def render(row: dict, which: str, width: int = 88) -> str:
     """One row as text. Pass B adds the passages. Never a stratum field, never
     the row's pass A label."""
-    wrap = lambda s, indent="": textwrap.fill(
-        s, width=width, initial_indent=indent, subsequent_indent=indent,
-        replace_whitespace=False)
+    def wrap(s, indent=""):
+        # Each line of the source wrapped on its own: textwrap mangles widths
+        # and drops the indent after an embedded newline.
+        return "\n".join(
+            textwrap.fill(line, width=width, initial_indent=indent,
+                          subsequent_indent=indent) if line.strip() else ""
+            for line in s.split("\n"))
     parts = [wrap(f"QUESTION: {row['question']}"), ""]
     if which == "B":
         parts += [wrap(p, "  ") for p in row["passages"]] + [""]
@@ -234,6 +276,10 @@ def label_twopass(path: Path, annotator: str, guide_version: str,
         say(f"{path.name}: both passes complete ({len(rows)} rows). Verify with --check.")
         return 0
 
+    if which == "B" and rows[0].get("pass_a_lock") is None:
+        lock_pass_a(rows)
+        save_rows(path, rows)
+
     todo = [i for i, r in enumerate(rows)
             if not (pass_a_done(r) if which == "A" else pass_b_done(r))]
     say(f"{path.name}: PASS {which}{' (with passages)' if which == 'B' else ''} — "
@@ -256,6 +302,7 @@ def label_twopass(path: Path, annotator: str, guide_version: str,
                 break
             if k1 == "s":
                 continue
+            seconds = round(clock() - start, 1)   # to the label, not the follow-up
             say(f"  → {PASS_A_CHOICES[k1][0]}\n")
             say(f"  {CONFIDENCE_QUESTION}")
             k2 = choose(CONFIDENCE_CHOICES, ask)
@@ -265,7 +312,7 @@ def label_twopass(path: Path, annotator: str, guide_version: str,
                 continue
             row["refusal_ok_response"] = PASS_A_CHOICES[k1][1]
             row["confidence_response"] = CONFIDENCE_CHOICES[k2][1]
-            row["seconds_response"] = round(clock() - start, 1)
+            row["seconds_response"] = seconds
             say(f"  → {PASS_A_CHOICES[k1][0]}, {CONFIDENCE_CHOICES[k2][0]}")
         else:
             say(f"  {PASS_B_QUESTION}")
@@ -274,6 +321,7 @@ def label_twopass(path: Path, annotator: str, guide_version: str,
                 break
             if k1 == "s":
                 continue
+            seconds = round(clock() - start, 1)   # to the label, not the checkbox
             ck = None
             if PASS_B_CHOICES[k1][1] is False:           # over-refusal only
                 say(f"  → {PASS_B_CHOICES[k1][0]}\n")
@@ -286,7 +334,7 @@ def label_twopass(path: Path, annotator: str, guide_version: str,
                 ck = COMMON_KNOWLEDGE_CHOICES[k2][1]
             row["refusal_ok_passages"] = PASS_B_CHOICES[k1][1]
             row["needs_common_knowledge"] = ck
-            row["seconds_passages"] = round(clock() - start, 1)
+            row["seconds_passages"] = seconds
             say(f"  → {PASS_B_CHOICES[k1][0]}"
                 + ("" if ck is None else f", common knowledge needed: {'yes' if ck else 'no'}"))
 
@@ -307,11 +355,14 @@ def label_twopass(path: Path, annotator: str, guide_version: str,
 def validate_twopass(rows: list[dict], expected_ids: set[str]) -> None:
     """The file is a finished, in-vocabulary label set for exactly these rows."""
     ids = {r["query_id"] for r in rows}
+    if len(ids) != len(rows):
+        raise AssertionError(f"{len(rows) - len(ids)} duplicated rows — one row per query id")
     if ids != expected_ids:
         raise AssertionError(
             f"file covers {len(ids)} rows, the batch has {len(expected_ids)} to label "
             f"({len(expected_ids - ids)} missing, {len(ids - expected_ids)} extra)"
         )
+    check_lock(rows)        # before completeness: a changed pass A outranks an unfinished pass B
     allowed = {
         "refusal_ok_response": {True, False},
         "confidence_response": {"confident", "unsure"},
@@ -337,6 +388,7 @@ def validate_twopass(rows: list[dict], expected_ids: set[str]) -> None:
             f"{len(bad)} rows have `needs_common_knowledge` set where it does not "
             f"apply, or missing where it does (e.g. {bad[:3]})"
         )
+    check_lock(rows, required=True)
 
 
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
@@ -349,10 +401,10 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
     gen_path = generation_cache_path(dataset, model, top_k, n_context, generator,
                                      PROMPT_VERSION, n_queries, seed, excluded)
     path = twopass_path(out_dir, gen_path, annotator)
-    flags = (f"--n-queries {n_queries} --seed {seed}"
-             + "".join(f" --exclude {e}" for e in exclude or [])
-             + f" --annotator {annotator} --guide-version {guide_version}"
-             + (f" --out {out_dir}" if Path(out_dir) != LABELS_DIR else ""))
+    flags = (batch_flags(dataset, n_queries, n_context, top_k, seed, model,
+                         generator, exclude)
+             + f" --annotator {annotator} --guide-version {shlex.quote(guide_version)}"
+             + (f" --out {shlex.quote(str(out_dir))}" if Path(out_dir) != LABELS_DIR else ""))
 
     if label or check:
         if not path.exists():
@@ -360,11 +412,10 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
                 f"no sheet at {path} — write it first with:\n"
                 f"  python -m retrieval_lab.twopass {flags}"
             )
-        load_labels(path, gens)        # anchor check: the batch was not regenerated
+        rows = load_labels(path, gens)  # anchor check: the batch was not regenerated
         if label:
             label_twopass(path, annotator, guide_version)
             return
-        rows = read_rows(path)
         check_header(rows, annotator, guide_version)
         validate_twopass(rows, {g.query_id for g in eligible_rows(gens)[0]})
         log.info("labels OK: %d rows, both passes complete, anchored to the batch", len(rows))
