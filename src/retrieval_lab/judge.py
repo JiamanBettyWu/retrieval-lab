@@ -73,7 +73,8 @@ from .cache import CACHE_DIR, generation_cache_path, judgement_cache_path
 from .data import load_beir
 from .fixture import (NOT_APPLICABLE, load_generations, load_labels,
                       sheet_path)
-from .generate import GENERATOR, PROMPT_VERSION, Generation, call_ollama
+from .generate import (GENERATOR, PROMPT_VERSION, Generation, call_ollama,
+                       excluded_ids)
 from .observability import op
 from .retrieve import BI_ENCODER, MODEL_HELP
 
@@ -781,21 +782,23 @@ def report(scored: dict) -> None:
 
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          judges: list[str], refresh: bool, model: str = BI_ENCODER,
-         generator: str = GENERATOR, smoke_n: int = 0) -> None:
+         generator: str = GENERATOR, smoke_n: int = 0,
+         exclude: list[str] | None = None) -> None:
     corpus, _queries, _qrels = load_beir(dataset)
+    excluded = excluded_ids(exclude)
     gens = load_generations(dataset, model, top_k, n_context, generator,
-                            n_queries, seed)
+                            n_queries, seed, excluded)
 
     # load_labels re-checks every raw_sha against the batch, so a fixture whose
     # generations were regenerated under it cannot reach a κ.
-    path = sheet_path(dataset, n_queries, seed)
+    path = sheet_path(dataset, n_queries, seed, excluded)
     rows = load_labels(path, gens)
     log.info("fixture: %s (%d rows)", path, len(rows))
 
     require_models(judges)
     generation_key = generation_cache_path(dataset, model, top_k, n_context,
                                            generator, PROMPT_VERSION, n_queries,
-                                           seed).stem
+                                           seed, excluded).stem
 
     items = judge_items(gens, corpus)
 
@@ -823,6 +826,8 @@ if __name__ == "__main__":
                    help="which fixture draw to read (part of its cache key)")
     p.add_argument("--seed", type=int, default=1,
                    help="the HELD-OUT draw; seed 0 is what the winner will score")
+    p.add_argument("--exclude", action="append", default=[], metavar="PATH",
+                   help="the --exclude files the batch was generated with; repeatable")
     p.add_argument("--n-context", type=int, default=10)
     p.add_argument("--top-k", type=int, default=100)
     p.add_argument("--judge", action="append", dest="judges",
@@ -845,4 +850,4 @@ if __name__ == "__main__":
                 "or --smoke [N] to check the prompt against a live model first")
     main(args.dataset, args.n_queries, args.n_context, args.top_k, args.seed,
          args.judges or CANDIDATES, args.refresh, args.model, args.generator,
-         args.smoke)
+         args.smoke, args.exclude)

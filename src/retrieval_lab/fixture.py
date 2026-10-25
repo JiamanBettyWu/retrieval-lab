@@ -14,9 +14,11 @@ against the batch they were written from.
 judge on the same items it will be graded on is the same leak as tuning a
 threshold on the test set: the winning candidate is partly winning because it
 matched 30 specific labels. Different seed, different questions, no leak — but
-`sample_queries` draws fresh from the shared pool rather than excluding the
-earlier draw, so overlap is *possible* and this module counts it out loud
-rather than assuming it away (see `overlap_with`).
+seed 1 was drawn fresh from the shared pool rather than excluding the earlier
+draw, so overlap is *possible* and this module counts it out loud rather than
+assuming it away (see `overlap_with`). A batch drawn with `generate --exclude`
+is disjoint from the batches it names by construction; pass the same
+`--exclude` files here to find its sheet.
 
 **Why every row carries `raw_sha`.** Generation is nondeterministic even at
 temperature 0 — `cache.generation_cache_path` explains why at length. So a
@@ -49,10 +51,10 @@ import re
 from dataclasses import asdict
 from pathlib import Path
 
-from .cache import cached_retrieval, generation_cache_path
+from .cache import cached_retrieval, exclusion_suffix, generation_cache_path
 from .data import load_beir
 from .generate import (GENERATOR, PROMPT_VERSION, Generation, cached_generations,
-                       context_for, sample_queries)
+                       context_for, excluded_ids, sample_queries)
 from .retrieve import BI_ENCODER, MODEL_HELP
 
 log = logging.getLogger("retrieval_lab")
@@ -247,10 +249,16 @@ LABEL_VALUES: dict[str, set] = {
 
 # ─────────────────────── plumbing (wired, working) ───────────────────────
 
-def sheet_path(dataset: str, n_queries: int, seed: int) -> Path:
+def sheet_path(dataset: str, n_queries: int, seed: int, excluded=frozenset()) -> Path:
     """Where one draw's worksheet lives. One function, because `judge.py` reads
-    these sheets too and a second copy of the format is a second thing to drift."""
-    return LABELS_DIR / f"fixture__{dataset}__n{n_queries}__seed{seed}.jsonl"
+    these sheets too and a second copy of the format is a second thing to drift.
+
+    Carries the same `__ex<hash>` suffix as the batch, for the same reason: a
+    draw that excludes earlier batches is a different draw from the plain one
+    with the same `(n, seed)`, and its sheet must not overwrite that one's labels.
+    """
+    return LABELS_DIR / (f"fixture__{dataset}__n{n_queries}__seed{seed}"
+                         f"{exclusion_suffix(excluded)}.jsonl")
 
 
 def raw_sha(raw: str) -> str:
@@ -268,18 +276,20 @@ def gold_in_context(qrels: dict, query_id: str, doc_ids: list[str]) -> int:
 
 
 def load_generations(dataset: str, model: str, top_k: int, n_context: int,
-                     generator: str, n_queries: int, seed: int) -> list[Generation]:
+                     generator: str, n_queries: int, seed: int,
+                     excluded=frozenset()) -> list[Generation]:
     """Read one cached generation batch. Never generates — raises if absent.
 
     Writing a worksheet must not be able to trigger a model run: a batch that
     appeared as a side effect of asking for a sheet is a batch nobody logged.
     """
     path = generation_cache_path(dataset, model, top_k, n_context, generator,
-                                 PROMPT_VERSION, n_queries, seed)
+                                 PROMPT_VERSION, n_queries, seed, excluded)
     if not path.exists():
+        hint = " --exclude <the same files>" if excluded else ""
         raise FileNotFoundError(
             f"no generation batch at {path} — draw it first with:\n"
-            f"  python -m retrieval_lab.generate --n-queries {n_queries} --seed {seed}"
+            f"  python -m retrieval_lab.generate --n-queries {n_queries} --seed {seed}{hint}"
         )
     return cached_generations(path, compute=lambda: (_ for _ in ()).throw(
         RuntimeError("unreachable: the cache file exists")))
@@ -288,9 +298,10 @@ def load_generations(dataset: str, model: str, top_k: int, n_context: int,
 def same_draw(a, b) -> bool:
     """Are these two cache files the same sample, differing only in prompt version?
 
-    `sample_queries` keys on (n_queries, seed) and nothing else, so two files
-    whose names match once the `__v<N>__` token is removed hold the same question
-    ids by construction.
+    `sample_queries` keys on (n_queries, seed, excluded ids) and nothing else —
+    all three are in the filename — so two files whose names match once the
+    `__v<N>__` token is removed hold the same question ids by construction. An
+    `__ex<hash>` suffix is a different draw from the plain one.
     """
     strip = lambda p: re.sub(r"__v\d+__", "__", Path(p).name)
     return strip(a) == strip(b)
@@ -299,9 +310,11 @@ def same_draw(a, b) -> bool:
 def overlap_with(qids: list[str], own_path) -> dict[str, list[str]]:
     """Which other batches on disk share query ids with this draw.
 
-    `sample_queries` re-draws from the whole eligible pool per (n, seed); it does
-    not exclude an earlier draw. Held-out is therefore an *intent*, and this
-    counts the exceptions instead of trusting the seed.
+    A batch drawn without `--exclude` re-draws from the whole eligible pool, so
+    for it held-out is only an *intent*, and this counts the exceptions instead
+    of trusting the seed. A batch drawn with `--exclude` is disjoint from the
+    batches it named by construction; this still reports overlap with any it
+    did not name.
     """
     from .cache import CACHE_DIR
 
@@ -662,10 +675,12 @@ def label_interactive(path: Path, ask=input, say=print, width: int = 88) -> int:
 
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          check: bool, force: bool, label: bool = False, model: str = BI_ENCODER,
-         generator: str = GENERATOR) -> None:
+         generator: str = GENERATOR, exclude: list[str] | None = None) -> None:
     corpus, queries, qrels = load_beir(dataset)
-    gens = load_generations(dataset, model, top_k, n_context, generator, n_queries, seed)
-    path = sheet_path(dataset, n_queries, seed)
+    excluded = excluded_ids(exclude)
+    gens = load_generations(dataset, model, top_k, n_context, generator, n_queries,
+                            seed, excluded)
+    path = sheet_path(dataset, n_queries, seed, excluded)
 
     if label:
         load_labels(path, gens)     # anchor check BEFORE editing: a sheet whose
@@ -683,7 +698,7 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
     shared = overlap_with([g.query_id for g in gens],
                           generation_cache_path(dataset, model, top_k, n_context,
                                                 generator, PROMPT_VERSION,
-                                                n_queries, seed))
+                                                n_queries, seed, excluded))
     if shared:
         log.warning("\n⚠️  this draw overlaps earlier batches — held-out is not clean:")
         for name, common in shared.items():
@@ -694,8 +709,9 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
 
     write_sheet(gens, corpus, qrels, path, force)
     log.info("\nworksheet -> %s (%d rows)", path, len(gens))
+    flags = "".join(f" --exclude {e}" for e in exclude or [])
     log.info("Label it, then: python -m retrieval_lab.fixture "
-             "--n-queries %d --seed %d --check", n_queries, seed)
+             "--n-queries %d --seed %d%s --check", n_queries, seed, flags)
 
 
 if __name__ == "__main__":
@@ -706,6 +722,8 @@ if __name__ == "__main__":
     p.add_argument("--n-context", type=int, default=10)
     p.add_argument("--top-k", type=int, default=100)
     p.add_argument("--seed", type=int, default=1, help="1 = the held-out fixture draw")
+    p.add_argument("--exclude", action="append", default=[], metavar="PATH",
+                   help="the --exclude files the batch was generated with; repeatable")
     p.add_argument("--check", action="store_true",
                    help="read the labels back and verify them against the batch")
     p.add_argument("--label", action="store_true",
@@ -716,4 +734,5 @@ if __name__ == "__main__":
     p.add_argument("--generator", default=GENERATOR)
     args = p.parse_args()
     main(args.dataset, args.n_queries, args.n_context, args.top_k, args.seed,
-         args.check, args.force, args.label, args.model, args.generator)
+         args.check, args.force, args.label, args.model, args.generator,
+         args.exclude)

@@ -314,3 +314,18 @@ def test_the_same_draw_under_a_new_prompt_version_is_not_an_overlap():
     assert fixture.same_draw(v1, v2)
     assert not fixture.same_draw(v1, v1.replace("seed1", "seed2"))
     assert not fixture.same_draw(v1, v1.replace("n30", "n100"))
+
+
+def test_an_excluding_draw_is_a_different_draw_from_the_plain_one():
+    """Same (n, seed), different questions — overlap between them is real."""
+    plain = "cache/gen__ds__enc__top100__ctx10__qwen3-8b__v2__n30__seed3.json"
+    excl = plain.replace(".json", "__ex0123456789.json")
+    assert not fixture.same_draw(plain, excl)
+    assert fixture.same_draw(excl, excl.replace("__v2__", "__v3__"))
+
+
+def test_an_excluding_draw_gets_its_own_sheet():
+    """Otherwise its sheet would overwrite the plain draw's hand labels."""
+    plain = fixture.sheet_path("ds", 30, 3)
+    assert fixture.sheet_path("ds", 30, 3, frozenset()) == plain
+    assert fixture.sheet_path("ds", 30, 3, frozenset({"q1"})) != plain

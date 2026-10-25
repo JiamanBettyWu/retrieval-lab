@@ -89,6 +89,7 @@ def test_context_comes_from_results_not_qrels():
     ("retriever", "some/finetuned-encoder"),
     ("n_queries", 15),
     ("seed", 1),
+    ("excluded", frozenset({"q1"})),
 ])
 def test_every_key_component_changes_the_cache_path(field, value):
     """Anything that changes what the model was asked — or WHICH questions were
@@ -105,6 +106,127 @@ def test_every_key_component_changes_the_cache_path(field, value):
 
 def test_the_same_config_reuses_one_path():
     assert generation_cache_path(**KEY) == generation_cache_path(**KEY)
+
+
+# ─────────────────── sampling that excludes earlier batches ───────────────────
+
+POOL_RESULTS = {f"p{i:02d}": {"dA": 1.0} for i in range(40)}
+POOL_QRELS = {q: {"dA": 1} for q in POOL_RESULTS}
+
+
+def test_an_excluding_draw_shares_no_id_with_any_excluded_batch():
+    """The claim itself: held-out by construction, not by a different seed."""
+    a = set(sample_queries(POOL_RESULTS, POOL_QRELS, n=10, seed=0))
+    b = set(sample_queries(POOL_RESULTS, POOL_QRELS, n=10, seed=1))
+    new = set(sample_queries(POOL_RESULTS, POOL_QRELS, n=15, seed=2, exclude=a | b))
+    assert len(new) == 15
+    assert not new & a
+    assert not new & b
+
+
+def test_the_same_exclusion_gives_the_same_sample():
+    ex = frozenset({"p01", "p02", "p03"})
+    assert (sample_queries(POOL_RESULTS, POOL_QRELS, n=10, seed=4, exclude=ex)
+            == sample_queries(POOL_RESULTS, POOL_QRELS, n=10, seed=4, exclude=ex))
+
+
+def test_an_empty_exclusion_is_the_plain_draw():
+    """Every batch on disk was drawn without exclusion; this keeps them reproducible."""
+    assert (sample_queries(POOL_RESULTS, POOL_QRELS, n=10, seed=3)
+            == sample_queries(POOL_RESULTS, POOL_QRELS, n=10, seed=3, exclude=frozenset()))
+
+
+def test_excluding_more_than_n_leaves_returns_what_is_left():
+    ex = frozenset(list(POOL_RESULTS)[:35])
+    left = sample_queries(POOL_RESULTS, POOL_QRELS, n=10, seed=0, exclude=ex)
+    assert left == sorted(set(POOL_RESULTS) - ex)
+
+
+def test_no_exclusion_leaves_the_cache_path_unchanged():
+    """The one protecting disk: 11 batches, their judgements and a labelled sheet
+    are keyed off names written before exclusion existed."""
+    path = generation_cache_path(**KEY, excluded=frozenset())
+    assert path == generation_cache_path(**KEY)
+    assert path.name.endswith("__n50__seed0.json")
+
+
+def test_different_exclusions_name_different_batches():
+    a = generation_cache_path(**KEY, excluded=frozenset({"q1"}))
+    b = generation_cache_path(**KEY, excluded=frozenset({"q1", "q2"}))
+    assert a != b
+
+
+def test_the_key_depends_on_the_ids_not_their_order_or_source():
+    """Excluding seed 0's v1 file or its v2 file is the same exclusion."""
+    assert (generation_cache_path(**KEY, excluded=frozenset(["q2", "q1"]))
+            == generation_cache_path(**KEY, excluded=frozenset(["q1", "q2"])))
+
+
+def test_the_exclusion_record_is_not_mistaken_for_a_batch():
+    """`fixture.overlap_with` globs `gen__*.json`; a record that matched would be
+    read as a batch, and a batch holding every excluded id is the opposite claim."""
+    from retrieval_lab.cache import exclusion_record_path
+    gen = generation_cache_path(**KEY, excluded=frozenset({"q1"}))
+    record = exclusion_record_path(gen)
+    assert record.parent == gen.parent
+    assert not record.match("gen__*.json")
+
+
+def test_exclusions_are_read_from_a_batch_a_sheet_and_an_id_list(tmp_path):
+    batch = tmp_path / "gen__x.json"
+    batch.write_text(json.dumps([{"query_id": "q1"}, {"query_id": "q2"}]))
+    sheet = tmp_path / "fixture__x.jsonl"
+    sheet.write_text('{"query_id": "q3"}\n\n{"query_id": "q1"}\n')
+    ids = tmp_path / "ids.txt"
+    ids.write_text("# held out\nq4  # inline comment\n\n q5 \n")
+    record = tmp_path / "exclude__gen__x.json"
+    record.write_text(json.dumps({"batch": "gen__x.json", "query_ids": ["q6", "q7"]}))
+    got = generate.load_exclusions([batch, sheet, ids, record])
+    assert got == {str(batch): ["q1", "q2"], str(sheet): ["q1", "q3"],
+                   str(ids): ["q4", "q5"], str(record): ["q6", "q7"]}
+
+
+def test_a_file_without_query_ids_is_rejected(tmp_path):
+    """The retrieval cache is also a .json in cache/ — and excluding nothing from
+    it would still change the key."""
+    wrong = tmp_path / "retrieval.json"
+    wrong.write_text(json.dumps({"q1": {"dA": 0.9}}))
+    with pytest.raises(ValueError, match="query_id"):
+        generate.load_exclusions([wrong])
+    broken = tmp_path / "broken.jsonl"
+    broken.write_text("[not json lines")
+    with pytest.raises(ValueError, match="broken.jsonl"):
+        generate.load_exclusions([broken])
+    empty = tmp_path / "empty.txt"
+    empty.write_text("# nothing\n")
+    with pytest.raises(ValueError, match="no query ids"):
+        generate.load_exclusions([empty])
+
+
+def test_a_record_names_the_same_batch_as_its_sources(tmp_path):
+    """fixture/judge can find a batch from its one record file instead of every
+    --exclude source it was drawn against."""
+    from retrieval_lab.cache import exclusion_record_path
+    src = tmp_path / "gen__a.json"
+    src.write_text(json.dumps([{"query_id": "q1"}, {"query_id": "q2"}]))
+    batch = tmp_path / "gen__b.json"
+    ex = generate.excluded_ids([src])
+    generate.write_exclusion_record(batch, generate.load_exclusions([src]), ex, n_in_pool=2)
+    assert generate.excluded_ids([exclusion_record_path(batch)]) == ex
+
+
+def test_the_record_says_what_the_hash_hides(tmp_path):
+    from retrieval_lab.cache import exclusion_record_path
+    batch = tmp_path / "gen__x__exabc.json"
+    ex = frozenset({"q2", "q1"})
+    generate.write_exclusion_record(batch, {"a.json": ["q1", "q2"]}, ex, n_in_pool=2)
+    record = json.loads(exclusion_record_path(batch).read_text())
+    assert record["query_ids"] == ["q1", "q2"]
+    assert record["sources"] == {"a.json": 2}
+    # Same ids again: a no-op. Different ids under the same name: loud.
+    generate.write_exclusion_record(batch, {"b.json": ["q1", "q2"]}, ex, n_in_pool=2)
+    with pytest.raises(AssertionError, match="different"):
+        generate.write_exclusion_record(batch, {}, frozenset({"q9"}), n_in_pool=1)
 
 
 def test_swapping_a_judge_does_not_invalidate_generations():
