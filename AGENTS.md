@@ -27,6 +27,10 @@ python -m retrieval_lab.fixture --n-queries 30 --seed 1           # Phase 4c.1: 
 python -m retrieval_lab.fixture --n-queries 30 --seed 1 --label   # ... label it (resumable, one row at a time)
 python -m retrieval_lab.fixture --n-queries 30 --seed 1 --check   # ... verify the labels against the batch
 
+python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator NAME --guide-version V           # two-pass refusal sheet (--out DIR to write elsewhere)
+python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator NAME --guide-version V --label   # ... pass A over every row, then pass B (resumable)
+python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator NAME --guide-version V --check   # ... verify both passes
+
 python -m retrieval_lab.judge --smoke                             # Phase 4c.2: can the candidates follow the format? (live, writes nothing)
 python -m retrieval_lab.judge --bakeoff                           # ... score every candidate against the labelled fixture
 
@@ -86,7 +90,8 @@ NFCorpus queries are terse topic strings rather than answerable questions. Phase
 `data.py` loads BEIR (corpus, queries, **qrels** — the ground-truth labels).
 `retrieve.py` embeds and ranks. `cache.py` persists the result.
 `evaluate.py`, `oracle.py` and `rerank.py` are the Phase 0-2 entrypoints;
-`hotpot_pool.py`, `generate.py`, `fixture.py` and `judge.py` are Phase 4's.
+`hotpot_pool.py`, `generate.py`, `fixture.py`, `twopass.py` and `judge.py` are
+Phase 4's.
 `observability.py` shims Weave's `@op` so every phase runs with weave absent or
 uninitialized.
 

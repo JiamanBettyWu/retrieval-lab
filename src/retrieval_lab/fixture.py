@@ -295,6 +295,26 @@ def load_generations(dataset: str, model: str, top_k: int, n_context: int,
         RuntimeError("unreachable: the cache file exists")))
 
 
+def batch_flags(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
+                model: str, generator: str, exclude: list[str] | None) -> str:
+    """The command-line flags that name one batch, for printed next-step hints.
+
+    Every non-default key component is included: a hint that drops one points
+    the copied command at a different batch.
+    """
+    import shlex
+    parts = [f"--n-queries {n_queries} --seed {seed}"]
+    for flag, value, default in (("--dataset", dataset, "hotpotqa-distractor-pool"),
+                                 ("--n-context", n_context, 10),
+                                 ("--top-k", top_k, 100),
+                                 ("--model", model, BI_ENCODER),
+                                 ("--generator", generator, GENERATOR)):
+        if value != default:
+            parts.append(f"{flag} {shlex.quote(str(value))}")
+    parts += [f"--exclude {shlex.quote(e)}" for e in exclude or []]
+    return " ".join(parts)
+
+
 def same_draw(a, b) -> bool:
     """Are these two cache files the same sample, differing only in prompt version?
 
@@ -676,11 +696,18 @@ def label_interactive(path: Path, ask=input, say=print, width: int = 88) -> int:
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          check: bool, force: bool, label: bool = False, model: str = BI_ENCODER,
          generator: str = GENERATOR, exclude: list[str] | None = None) -> None:
-    corpus, queries, qrels = load_beir(dataset)
     excluded = excluded_ids(exclude)
     gens = load_generations(dataset, model, top_k, n_context, generator, n_queries,
                             seed, excluded)
     path = sheet_path(dataset, n_queries, seed, excluded)
+    flags = batch_flags(dataset, n_queries, n_context, top_k, seed, model, generator,
+                        exclude)
+
+    if (label or check) and not path.exists():
+        raise FileNotFoundError(
+            f"no sheet at {path} — write it first with:\n"
+            f"  python -m retrieval_lab.fixture {flags}"
+        )
 
     if label:
         load_labels(path, gens)     # anchor check BEFORE editing: a sheet whose
@@ -693,6 +720,7 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
         log.info("labels OK: %d rows, all anchored to the batch on disk", len(rows))
         return
 
+    corpus, _queries, qrels = load_beir(dataset)   # only the sheet writer needs it
     report_strata(gens, qrels)
 
     shared = overlap_with([g.query_id for g in gens],
@@ -709,9 +737,7 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
 
     write_sheet(gens, corpus, qrels, path, force)
     log.info("\nworksheet -> %s (%d rows)", path, len(gens))
-    flags = "".join(f" --exclude {e}" for e in exclude or [])
-    log.info("Label it, then: python -m retrieval_lab.fixture "
-             "--n-queries %d --seed %d%s --check", n_queries, seed, flags)
+    log.info("Label it, then: python -m retrieval_lab.fixture %s --check", flags)
 
 
 if __name__ == "__main__":
