@@ -98,7 +98,7 @@ def test_the_sheet_is_never_overwritten(sheet):
 def test_annotators_get_separate_files(tmp_path):
     gp = Path("cache/gen__ds__enc__top100__ctx10__qwen3-8b__v2__n30__seed2__exabc.json")
     a = twopass.twopass_path(tmp_path, gp, "betty")
-    b = twopass.twopass_path(tmp_path, gp, "volunteer1")
+    b = twopass.twopass_path(tmp_path, gp, "annotator2")
     assert a != b and a.parent == b.parent == tmp_path
     assert "seed2__exabc" in a.name            # the batch key carries over whole
     for bad in ("../elsewhere", "betty\n", ""):
@@ -216,6 +216,17 @@ def test_a_changed_pass_a_label_is_caught_once_pass_b_has_begun(sheet):
         twopass.validate_twopass(data, {"q1", "q2", "q4"})
 
 
+def test_pass_b_labels_without_a_lock_are_refused(sheet):
+    label(sheet, *["a", "c"] * 3)
+    label(sheet, "k", "q")
+    data = rows(sheet)
+    for r in data:
+        r["pass_a_lock"] = None                          # lock stripped by hand
+    sheet.write_text("\n".join(json.dumps(r) for r in data) + "\n")
+    with pytest.raises(AssertionError, match="never locked"):
+        label(sheet, "k")
+
+
 def test_pass_a_can_change_freely_before_pass_b_begins(sheet):
     label(sheet, *["a", "c"] * 3)
     assert {r["pass_a_lock"] for r in rows(sheet)} == {None}
@@ -228,7 +239,7 @@ def test_a_different_guide_version_is_refused(sheet):
 
 def test_another_annotators_file_is_refused(sheet):
     with pytest.raises(AssertionError, match="labels by"):
-        twopass.label_twopass(sheet, "volunteer1", "0.1", ask=replies(), say=Screen())
+        twopass.label_twopass(sheet, "annotator2", "0.1", ask=replies(), say=Screen())
 
 
 # ─────────────────────────── resume and timing ───────────────────────────

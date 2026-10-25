@@ -190,8 +190,11 @@ def check_lock(rows: list[dict], required: bool = False) -> None:
     """
     locks = {r.get("pass_a_lock") for r in rows}
     if locks == {None}:
-        if required:
-            raise AssertionError("pass B is complete but pass A was never locked")
+        # The lock is stamped before the first pass B row is shown, so pass B
+        # labels without one mean the file was edited — and re-stamping it now
+        # would accept whatever pass A it holds.
+        if required or pass_b_started(rows):
+            raise AssertionError("this file has pass B labels but pass A was never locked")
         return
     if len(locks) != 1 or locks != {pass_a_digest(rows)}:
         raise AssertionError(
