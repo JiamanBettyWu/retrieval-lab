@@ -74,7 +74,7 @@ from .data import load_beir
 from .fixture import (NOT_APPLICABLE, load_generations, load_labels,
                       sheet_path)
 from .generate import (GENERATOR, PROMPT_VERSION, Generation, call_ollama,
-                       load_exclusions)
+                       excluded_ids)
 from .observability import op
 from .retrieve import BI_ENCODER, MODEL_HELP
 
@@ -785,7 +785,7 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          generator: str = GENERATOR, smoke_n: int = 0,
          exclude: list[str] | None = None) -> None:
     corpus, _queries, _qrels = load_beir(dataset)
-    excluded = frozenset().union(*load_exclusions(exclude or []).values())
+    excluded = excluded_ids(exclude)
     gens = load_generations(dataset, model, top_k, n_context, generator,
                             n_queries, seed, excluded)
 

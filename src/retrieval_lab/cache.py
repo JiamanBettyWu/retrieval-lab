@@ -63,6 +63,16 @@ def exclusion_tag(excluded) -> str:
     return hashlib.sha256("\n".join(sorted(excluded)).encode()).hexdigest()[:10]
 
 
+def exclusion_suffix(excluded) -> str:
+    """The filename token for an exclusion: `__ex<tag>`, or "" for none.
+
+    One function because a batch and its labelling sheet must carry the same
+    token — a second copy of the format is a link that can silently break.
+    """
+    tag = exclusion_tag(excluded)
+    return f"__ex{tag}" if tag else ""
+
+
 def generation_cache_path(dataset: str, retriever: str, top_k: int, n_context: int,
                           generator: str, prompt_version: str, n_queries: int,
                           seed: int, excluded=frozenset()) -> Path:
@@ -97,11 +107,9 @@ def generation_cache_path(dataset: str, retriever: str, top_k: int, n_context: i
     The judge model IDs are deliberately NOT here — see `judgement_cache_path`.
     """
     slug = lambda s: s.replace("/", "__").replace(":", "-")
-    tag = exclusion_tag(excluded)
     return (CACHE_DIR / f"gen__{dataset}__{slug(retriever)}__top{top_k}"
                         f"__ctx{n_context}__{slug(generator)}__{prompt_version}"
-                        f"__n{n_queries}__seed{seed}"
-                        f"{f'__ex{tag}' if tag else ''}.json")
+                        f"__n{n_queries}__seed{seed}{exclusion_suffix(excluded)}.json")
 
 
 def exclusion_record_path(generation_path: Path) -> Path:

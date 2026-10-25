@@ -51,10 +51,10 @@ import re
 from dataclasses import asdict
 from pathlib import Path
 
-from .cache import cached_retrieval, exclusion_tag, generation_cache_path
+from .cache import cached_retrieval, exclusion_suffix, generation_cache_path
 from .data import load_beir
 from .generate import (GENERATOR, PROMPT_VERSION, Generation, cached_generations,
-                       context_for, load_exclusions, sample_queries)
+                       context_for, excluded_ids, sample_queries)
 from .retrieve import BI_ENCODER, MODEL_HELP
 
 log = logging.getLogger("retrieval_lab")
@@ -257,9 +257,8 @@ def sheet_path(dataset: str, n_queries: int, seed: int, excluded=frozenset()) ->
     draw that excludes earlier batches is a different draw from the plain one
     with the same `(n, seed)`, and its sheet must not overwrite that one's labels.
     """
-    tag = exclusion_tag(excluded)
     return LABELS_DIR / (f"fixture__{dataset}__n{n_queries}__seed{seed}"
-                         f"{f'__ex{tag}' if tag else ''}.jsonl")
+                         f"{exclusion_suffix(excluded)}.jsonl")
 
 
 def raw_sha(raw: str) -> str:
@@ -299,9 +298,10 @@ def load_generations(dataset: str, model: str, top_k: int, n_context: int,
 def same_draw(a, b) -> bool:
     """Are these two cache files the same sample, differing only in prompt version?
 
-    `sample_queries` keys on (n_queries, seed) and nothing else, so two files
-    whose names match once the `__v<N>__` token is removed hold the same question
-    ids by construction.
+    `sample_queries` keys on (n_queries, seed, excluded ids) and nothing else —
+    all three are in the filename — so two files whose names match once the
+    `__v<N>__` token is removed hold the same question ids by construction. An
+    `__ex<hash>` suffix is a different draw from the plain one.
     """
     strip = lambda p: re.sub(r"__v\d+__", "__", Path(p).name)
     return strip(a) == strip(b)
@@ -310,9 +310,11 @@ def same_draw(a, b) -> bool:
 def overlap_with(qids: list[str], own_path) -> dict[str, list[str]]:
     """Which other batches on disk share query ids with this draw.
 
-    `sample_queries` re-draws from the whole eligible pool per (n, seed); it does
-    not exclude an earlier draw. Held-out is therefore an *intent*, and this
-    counts the exceptions instead of trusting the seed.
+    A batch drawn without `--exclude` re-draws from the whole eligible pool, so
+    for it held-out is only an *intent*, and this counts the exceptions instead
+    of trusting the seed. A batch drawn with `--exclude` is disjoint from the
+    batches it named by construction; this still reports overlap with any it
+    did not name.
     """
     from .cache import CACHE_DIR
 
@@ -675,7 +677,7 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          check: bool, force: bool, label: bool = False, model: str = BI_ENCODER,
          generator: str = GENERATOR, exclude: list[str] | None = None) -> None:
     corpus, queries, qrels = load_beir(dataset)
-    excluded = frozenset().union(*load_exclusions(exclude or []).values())
+    excluded = excluded_ids(exclude)
     gens = load_generations(dataset, model, top_k, n_context, generator, n_queries,
                             seed, excluded)
     path = sheet_path(dataset, n_queries, seed, excluded)
@@ -707,8 +709,9 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
 
     write_sheet(gens, corpus, qrels, path, force)
     log.info("\nworksheet -> %s (%d rows)", path, len(gens))
+    flags = "".join(f" --exclude {e}" for e in exclude or [])
     log.info("Label it, then: python -m retrieval_lab.fixture "
-             "--n-queries %d --seed %d --check", n_queries, seed)
+             "--n-queries %d --seed %d%s --check", n_queries, seed, flags)
 
 
 if __name__ == "__main__":

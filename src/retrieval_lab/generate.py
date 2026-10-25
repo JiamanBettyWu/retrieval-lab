@@ -300,32 +300,43 @@ def sample_queries(results: dict, qrels: dict, n: int, seed: int = 0,
 def load_exclusions(paths) -> dict[str, list[str]]:
     """Read `--exclude` sources into {source: sorted query ids}.
 
-    Three shapes, by suffix: `.json` is a generation batch from `cache/` (a list
-    of rows), `.jsonl` is a labelling sheet (one row per line), anything else is
-    plain text with one query id per line (`#` starts a comment). Kept per source
-    so the exclusion record can say where each id came from.
+    Four shapes, by suffix and content: a `.json` list is a generation batch
+    from `cache/`; a `.json` object is an exclusion record (`exclude__…json`),
+    which lets `fixture` and `judge` find a batch from one file instead of every
+    source it was drawn against; `.jsonl` is a labelling sheet (one row per
+    line); anything else is plain text with one query id per line, where `#`
+    starts a comment. Kept per source so the record can say where each id came
+    from.
     """
     out = {}
     for p in map(Path, paths):
         text = p.read_text()
         try:
             if p.suffix == ".json":
-                ids = [r["query_id"] for r in json.loads(text)]
+                data = json.loads(text)
+                ids = (data["query_ids"] if isinstance(data, dict)
+                       else [r["query_id"] for r in data])
             elif p.suffix == ".jsonl":
                 ids = [json.loads(line)["query_id"]
                        for line in text.splitlines() if line.strip()]
             else:
-                ids = [line.strip() for line in text.splitlines()
-                       if line.strip() and not line.lstrip().startswith("#")]
-        except (KeyError, TypeError) as e:
+                ids = [line.split("#", 1)[0].strip() for line in text.splitlines()]
+                ids = [i for i in ids if i]
+        except (KeyError, TypeError, json.JSONDecodeError) as e:
             raise ValueError(
-                f"{p} is not a generation batch or a labelling sheet — no "
-                f"`query_id` in its rows ({e!r})"
+                f"{p} is not a generation batch, exclusion record or labelling "
+                f"sheet — no `query_id` in its rows ({e!r})"
             ) from e
         if not ids:
             raise ValueError(f"{p} holds no query ids — wrong file?")
         out[str(p)] = sorted(set(ids))
     return out
+
+
+def excluded_ids(paths) -> frozenset:
+    """The `--exclude` files as one id set — the cache key's input, in one place
+    so `generate`, `fixture` and `judge` cannot disagree on a batch's name."""
+    return frozenset().union(*load_exclusions(paths or []).values())
 
 
 def write_exclusion_record(path: Path, sources: dict[str, list[str]],
@@ -456,7 +467,7 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          exclude: list[str] | None = None) -> None:
     corpus, queries, qrels = load_beir(dataset)
     sources = load_exclusions(exclude or [])
-    excluded = frozenset().union(*sources.values())
+    excluded = excluded_ids(exclude)
 
     results = cached_retrieval(
         dataset, model, top_k,
@@ -501,6 +512,11 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
         raise AssertionError(
             f"cache holds {len(gens)} answers but this config asks for {len(qids)} "
             f"queries — {path.name} was written under different sampling"
+        )
+    if sorted(g.query_id for g in gens) != qids:
+        raise AssertionError(
+            f"{path.name} holds different questions from the ones this config "
+            "draws — the eligible pool changed since it was written"
         )
     # The draw cannot return an excluded id; a cached file can, if it was
     # written by hand or renamed onto this key. Cheap, and it is the claim.

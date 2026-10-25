@@ -178,10 +178,12 @@ def test_exclusions_are_read_from_a_batch_a_sheet_and_an_id_list(tmp_path):
     sheet = tmp_path / "fixture__x.jsonl"
     sheet.write_text('{"query_id": "q3"}\n\n{"query_id": "q1"}\n')
     ids = tmp_path / "ids.txt"
-    ids.write_text("# held out\nq4\n\n q5 \n")
-    got = generate.load_exclusions([batch, sheet, ids])
+    ids.write_text("# held out\nq4  # inline comment\n\n q5 \n")
+    record = tmp_path / "exclude__gen__x.json"
+    record.write_text(json.dumps({"batch": "gen__x.json", "query_ids": ["q6", "q7"]}))
+    got = generate.load_exclusions([batch, sheet, ids, record])
     assert got == {str(batch): ["q1", "q2"], str(sheet): ["q1", "q3"],
-                   str(ids): ["q4", "q5"]}
+                   str(ids): ["q4", "q5"], str(record): ["q6", "q7"]}
 
 
 def test_a_file_without_query_ids_is_rejected(tmp_path):
@@ -191,10 +193,26 @@ def test_a_file_without_query_ids_is_rejected(tmp_path):
     wrong.write_text(json.dumps({"q1": {"dA": 0.9}}))
     with pytest.raises(ValueError, match="query_id"):
         generate.load_exclusions([wrong])
+    broken = tmp_path / "broken.jsonl"
+    broken.write_text("[not json lines")
+    with pytest.raises(ValueError, match="broken.jsonl"):
+        generate.load_exclusions([broken])
     empty = tmp_path / "empty.txt"
     empty.write_text("# nothing\n")
     with pytest.raises(ValueError, match="no query ids"):
         generate.load_exclusions([empty])
+
+
+def test_a_record_names_the_same_batch_as_its_sources(tmp_path):
+    """fixture/judge can find a batch from its one record file instead of every
+    --exclude source it was drawn against."""
+    from retrieval_lab.cache import exclusion_record_path
+    src = tmp_path / "gen__a.json"
+    src.write_text(json.dumps([{"query_id": "q1"}, {"query_id": "q2"}]))
+    batch = tmp_path / "gen__b.json"
+    ex = generate.excluded_ids([src])
+    generate.write_exclusion_record(batch, generate.load_exclusions([src]), ex, n_in_pool=2)
+    assert generate.excluded_ids([exclusion_record_path(batch)]) == ex
 
 
 def test_the_record_says_what_the_hash_hides(tmp_path):
