@@ -258,15 +258,31 @@ def test_quitting_halfway_through_a_row_keeps_no_partial_answer(sheet):
     assert rows(sheet)[0]["refusal_ok_response"] is None
 
 
-def test_seconds_run_from_display_to_the_label_not_the_follow_up(sheet):
-    """The follow-up (confidence, checkbox) is not timed: the checkbox is asked
-    only on over-refusals, so timing it would make pass B's seconds depend on
-    the label itself."""
-    label(sheet, "a", "c", "q")
-    assert rows(sheet)[0]["seconds_response"] == 2.0    # ticks: start 2, label 4
-    label(sheet, *["a", "c"] * 2)
-    label(sheet, "o", "y", "k", "k")
-    assert [r["seconds_passages"] for r in rows(sheet)] == [2.0, 2.0, 2.0]
+def keypress_terminal(*answers, seconds_per_key=3.0):
+    """A fake terminal where each answer takes `seconds_per_key` on the clock."""
+    t = [0.0]
+    it = iter(answers)
+    def ask(_prompt=""):
+        t[0] += seconds_per_key
+        return next(it)
+    return ask, lambda: t[0]
+
+
+def test_seconds_run_to_the_label_and_the_total_to_the_last_keypress(sheet):
+    """`seconds_*` stops at the main label: the checkbox is asked only on
+    over-refusals, so timing it would make pass B's seconds depend on the label.
+    `seconds_*_total` includes the follow-up — the full cost of the row."""
+    ask, clock = keypress_terminal(*["a", "c"] * 3)
+    twopass.label_twopass(sheet, "betty", "0.1", ask=ask, say=Screen(), clock=clock)
+    a = rows(sheet)
+    assert [r["seconds_response"] for r in a] == [3.0] * 3
+    assert [r["seconds_response_total"] for r in a] == [6.0] * 3
+
+    ask, clock = keypress_terminal("o", "y", "k", "k")
+    twopass.label_twopass(sheet, "betty", "0.1", ask=ask, say=Screen(), clock=clock)
+    b = rows(sheet)
+    assert [r["seconds_passages"] for r in b] == [3.0, 3.0, 3.0]
+    assert [r["seconds_passages_total"] for r in b] == [6.0, 3.0, 3.0]   # checkbox row only
 
 
 def test_an_unrecognised_key_asks_again(sheet):
@@ -295,6 +311,13 @@ def test_a_duplicated_row_fails(sheet):
 def test_a_missing_row_fails(sheet):
     with pytest.raises(AssertionError, match="missing"):
         twopass.validate_twopass(finished(sheet)[:2], {"q1", "q2", "q4"})
+
+
+def test_a_total_shorter_than_its_label_time_fails(sheet):
+    data = finished(sheet)
+    data[0]["seconds_passages_total"] = 0.5
+    with pytest.raises(AssertionError, match="seconds_passages"):
+        twopass.validate_twopass(data, {"q1", "q2", "q4"})
 
 
 def test_a_checkbox_on_a_refusal_ok_row_fails(sheet):

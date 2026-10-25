@@ -48,8 +48,14 @@ from .retrieve import BI_ENCODER, MODEL_HELP
 
 log = logging.getLogger("retrieval_lab")
 
-PASS_A_FIELDS = ("refusal_ok_response", "confidence_response", "seconds_response")
-PASS_B_FIELDS = ("refusal_ok_passages", "needs_common_knowledge", "seconds_passages")
+# Two timings per pass: `seconds_*` runs from the row being shown to the main
+# label, `seconds_*_total` to the row's last keypress (the follow-up question
+# included). The first compares labels fairly — only over-refusals get the
+# checkbox; the second is the full cost of a row.
+PASS_A_FIELDS = ("refusal_ok_response", "confidence_response",
+                 "seconds_response", "seconds_response_total")
+PASS_B_FIELDS = ("refusal_ok_passages", "needs_common_knowledge",
+                 "seconds_passages", "seconds_passages_total")
 
 # key → (word on screen, stored value). These sentences must match the
 # labelling guide (§3.1, §3.3, §4.1, §4.3); change one and change both.
@@ -161,7 +167,7 @@ def pass_a_done(row: dict) -> bool:
 
 
 def pass_b_done(row: dict) -> bool:
-    return row["refusal_ok_passages"] is not None and row["seconds_passages"] is not None
+    return all(row[f] is not None for f in PASS_B_FIELDS if f != "needs_common_knowledge")
 
 
 def pass_b_started(rows: list[dict]) -> bool:
@@ -316,6 +322,7 @@ def label_twopass(path: Path, annotator: str, guide_version: str,
             row["refusal_ok_response"] = PASS_A_CHOICES[k1][1]
             row["confidence_response"] = CONFIDENCE_CHOICES[k2][1]
             row["seconds_response"] = seconds
+            row["seconds_response_total"] = round(clock() - start, 1)
             say(f"  → {PASS_A_CHOICES[k1][0]}, {CONFIDENCE_CHOICES[k2][0]}")
         else:
             say(f"  {PASS_B_QUESTION}")
@@ -338,6 +345,7 @@ def label_twopass(path: Path, annotator: str, guide_version: str,
             row["refusal_ok_passages"] = PASS_B_CHOICES[k1][1]
             row["needs_common_knowledge"] = ck
             row["seconds_passages"] = seconds
+            row["seconds_passages_total"] = round(clock() - start, 1)
             say(f"  → {PASS_B_CHOICES[k1][0]}"
                 + ("" if ck is None else f", common knowledge needed: {'yes' if ck else 'no'}"))
 
@@ -376,10 +384,13 @@ def validate_twopass(rows: list[dict], expected_ids: set[str]) -> None:
         if bad:
             raise AssertionError(f"{len(bad)} rows have no valid '{field}' (e.g. {bad[:3]})")
     for field in ("seconds_response", "seconds_passages"):
+        total = f"{field}_total"
         bad = [r["query_id"] for r in rows
-               if not isinstance(r[field], (int, float)) or r[field] < 0]
+               if not all(isinstance(r[f], (int, float)) for f in (field, total))
+               or not 0 <= r[field] <= r[total]]
         if bad:
-            raise AssertionError(f"{len(bad)} rows have no valid '{field}' (e.g. {bad[:3]})")
+            raise AssertionError(
+                f"{len(bad)} rows have no valid '{field}' / '{total}' (e.g. {bad[:3]})")
     # The checkbox exists only on over-refusals: missing there, or present
     # anywhere else, is a file that was edited by hand.
     bad = [r["query_id"] for r in rows
