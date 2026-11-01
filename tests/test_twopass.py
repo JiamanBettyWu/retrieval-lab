@@ -331,3 +331,59 @@ def test_an_unfinished_pass_fails(sheet):
     label(sheet, *["a", "c"] * 3)
     with pytest.raises(AssertionError, match="refusal_ok_passages"):
         twopass.validate_twopass(rows(sheet), {"q1", "q2", "q4"})
+
+
+# ─────────────────────────── --gold filter ───────────────────────────
+# GENS' refused, not-cut-off rows: q1 has 2 gold docs in context, q2 and q4 have 1.
+
+def test_gold_filter_keeps_only_the_named_strata_and_counts_the_rest(tmp_path):
+    path = tmp_path / "twopass__x__betty.jsonl"
+    counts = twopass.write_twopass_sheet(GENS, CORPUS, QRELS, path, "betty", "0.1",
+                                         gold={0, 1})
+    written = rows(path)
+    assert [r["query_id"] for r in written] == ["q2", "q4"]
+    assert counts["other_strata"] == 1 and counts["on_sheet"] == 2
+    assert all(r["gold_kept"] == [0, 1] for r in written)
+
+
+def test_no_filter_records_nothing(sheet):
+    assert all("gold_kept" not in r for r in rows(sheet))
+
+
+def test_check_expects_only_the_filtered_rows(tmp_path):
+    path = tmp_path / "twopass__x__betty.jsonl"
+    twopass.write_twopass_sheet(GENS, CORPUS, QRELS, path, "betty", "0.1", gold={0, 2})
+    assert twopass.expected_ids(rows(path), GENS, lambda: QRELS) == {"q1"}
+
+
+def test_check_without_a_filter_never_loads_qrels(sheet):
+    def boom():
+        raise AssertionError("qrels loaded")
+    assert twopass.expected_ids(rows(sheet), GENS, boom) == {"q1", "q2", "q4"}
+
+
+def test_mixed_filters_in_one_file_are_refused(tmp_path):
+    path = tmp_path / "twopass__x__betty.jsonl"
+    twopass.write_twopass_sheet(GENS, CORPUS, QRELS, path, "betty", "0.1", gold={1, 2})
+    written = rows(path)
+    written[0]["gold_kept"] = [0, 1]
+    with pytest.raises(AssertionError, match="different --gold filters"):
+        twopass.expected_ids(written, GENS, lambda: QRELS)
+
+
+def test_a_one_stratum_filter_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="at least two strata"):
+        twopass.write_twopass_sheet(GENS, CORPUS, QRELS, tmp_path / "t.jsonl", "betty", "0.1",
+                                    gold={2})
+
+
+def test_a_filter_that_leaves_nothing_says_so(tmp_path):
+    with pytest.raises(ValueError, match="leaves none of the batch's 3 refused rows"):
+        twopass.write_twopass_sheet(GENS, CORPUS, QRELS, tmp_path / "t.jsonl", "betty", "0.1",
+                                    gold={0, 3})
+
+
+def test_an_empty_file_gets_the_coverage_error_not_a_crash():
+    with pytest.raises(AssertionError, match="file covers 0 rows"):
+        twopass.validate_twopass([], twopass.expected_ids([], GENS, lambda: QRELS))
+
