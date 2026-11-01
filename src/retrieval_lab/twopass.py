@@ -85,13 +85,30 @@ ANNOTATOR_RE = re.compile(r"[A-Za-z0-9_-]+")
 TIMING_SESSION = "session"
 
 
-def twopass_path(out_dir: Path, generation_path: Path, annotator: str) -> Path:
-    """One file per (batch, annotator). The batch's own name is the key, so
+def batch_name(generation_path: Path) -> str:
+    """The batch's own cache name, the key every label file of it shares, so
     every key component — exclusions included — carries over unchanged."""
+    return Path(generation_path).stem.removeprefix("gen__")
+
+
+def check_annotator(annotator: str) -> None:
     if not ANNOTATOR_RE.fullmatch(annotator):
         raise ValueError(f"annotator {annotator!r}: use letters, digits, - or _ only")
-    batch = generation_path.stem.removeprefix("gen__")
-    return Path(out_dir) / f"twopass__{batch}__{annotator}.jsonl"
+
+
+def twopass_path(out_dir: Path, generation_path: Path, annotator: str) -> Path:
+    """One file per (batch, annotator)."""
+    check_annotator(annotator)
+    return Path(out_dir) / f"twopass__{batch_name(generation_path)}__{annotator}.jsonl"
+
+
+def file_timing(rows: list[dict]) -> str:
+    """"session" for a file labelled in spreadsheets, "row" for a terminal one.
+    A file mixing the two was edited by hand, and neither path may take it."""
+    kinds = {r.get("timing") == TIMING_SESSION for r in rows}
+    if len(kinds) > 1:
+        raise AssertionError("this file mixes terminal rows and spreadsheet rows")
+    return TIMING_SESSION if kinds == {True} else "row"
 
 
 def eligible_rows(gens: list[Generation]) -> tuple[list[Generation], dict[str, int]]:
@@ -293,7 +310,7 @@ def label_twopass(path: Path, annotator: str, guide_version: str,
     """
     rows = read_rows(path)
     check_header(rows, annotator, guide_version)
-    if any(r.get("timing") == TIMING_SESSION for r in rows):
+    if file_timing(rows) == TIMING_SESSION:
         raise AssertionError(
             f"{path.name} is labelled through spreadsheets (--export-sheet / "
             "--import-sheet); its rows have no per-row timing to add to"
@@ -441,6 +458,12 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
     actions = [label, check, bool(assign), bool(export_sheet), bool(import_sheet)]
     if sum(actions) > 1:
         raise SystemExit("use one of --label, --check, --assign, --export-sheet, --import-sheet")
+    # A flag without its parent would otherwise fall through to the default
+    # action and write a new terminal sheet.
+    if sittings and not import_sheet:
+        raise SystemExit("--sittings goes with --import-sheet")
+    if (shared != "0" or assign_seed != 0) and not assign:
+        raise SystemExit("--shared and --assign-seed go with --assign")
     excluded = excluded_ids(exclude)
     gens = load_generations(dataset, model, top_k, n_context, generator, n_queries,
                             seed, excluded)
@@ -477,7 +500,7 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
         if export_sheet:
             which = {"pass-a": "A", "pass-b": "B"}[export_sheet]
             corpus = qrels = None
-            if not path.exists():
+            if which == "A" and not path.exists():
                 corpus, _queries, qrels = load_beir(dataset)
             csv_path, template, risky = sheets.export_sheet(
                 which, path, assignment, annotator, guide_version, gens, corpus, qrels)
@@ -496,8 +519,8 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
         which = sheets.sheet_pass(import_sheet)
         result = sheets.import_sheet(which, path, import_sheet, sittings, assignment,
                                      annotator, guide_version)
-        if result == "unchanged":
-            log.info("pass A labels identical to the locked ones — nothing to import")
+        if result == "sittings":
+            log.info("pass A labels identical to the locked ones; sittings updated")
         else:
             log.info("pass %s imported: %d rows -> %s", which,
                      len(sheets.assigned_ids(assignment, annotator)), path)

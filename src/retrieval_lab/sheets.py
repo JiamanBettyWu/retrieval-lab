@@ -6,9 +6,9 @@ differs. Driven from `twopass`'s command line:
 
     python -m retrieval_lab.twopass <batch> --assign V1 V2 --shared 30 --assign-seed 0
     python -m retrieval_lab.twopass <batch> --annotator V1 --guide-version 0.1 --export-sheet pass-a
-    python -m retrieval_lab.twopass <batch> --annotator V1 --guide-version 0.1 --import-sheet FILLED.csv --sessions SITTINGS.csv
+    python -m retrieval_lab.twopass <batch> --annotator V1 --guide-version 0.1 --import-sheet FILLED.csv --sittings SITTINGS.csv
     python -m retrieval_lab.twopass <batch> --annotator V1 --guide-version 0.1 --export-sheet pass-b
-    python -m retrieval_lab.twopass <batch> --annotator V1 --guide-version 0.1 --import-sheet FILLED.csv --sessions SITTINGS.csv
+    python -m retrieval_lab.twopass <batch> --annotator V1 --guide-version 0.1 --import-sheet FILLED.csv --sittings SITTINGS.csv
     python -m retrieval_lab.twopass <batch> --annotator V1 --guide-version 0.1 --check
 
 **Assignment is written once.** Each annotator gets their own rows plus an
@@ -43,11 +43,12 @@ from pathlib import Path
 
 from .fixture import gold_in_context, save_rows
 from .generate import Generation
-from .twopass import (ANNOTATOR_RE, COMMON_KNOWLEDGE_CHOICES, COMMON_KNOWLEDGE_QUESTION,
+from .twopass import (COMMON_KNOWLEDGE_CHOICES, COMMON_KNOWLEDGE_QUESTION,
                       CONFIDENCE_CHOICES, CONFIDENCE_QUESTION, PASS_A_CHOICES,
                       PASS_A_QUESTION, PASS_B_CHOICES, PASS_B_QUESTION, TIMING_SESSION,
-                      check_header, check_lock, eligible_rows, lock_pass_a, pass_a_done,
-                      read_rows, twopass_row, validate_twopass)
+                      batch_name, check_annotator, check_header, check_lock, eligible_rows,
+                      file_timing, lock_pass_a, pass_a_done, pass_b_started, read_rows,
+                      twopass_row, validate_twopass)
 
 TIMING = TIMING_SESSION
 MAX_SITTING_MINUTES = 8 * 60      # longer is a typo, not a sitting
@@ -59,8 +60,7 @@ FORMULA_START = ("=", "+", "-", "@")
 # ─────────────────────────── assignment ───────────────────────────
 
 def assignment_path(out_dir: Path, generation_path: Path) -> Path:
-    batch = generation_path.stem.removeprefix("gen__")
-    return Path(out_dir) / f"assign__{batch}.json"
+    return Path(out_dir) / f"assign__{batch_name(generation_path)}.json"
 
 
 def _allocate(n: int, sizes: dict) -> dict:
@@ -88,8 +88,7 @@ def make_assignment(strata: dict[str, int], annotators: list[str], n_shared,
     if len(set(annotators)) != len(annotators):
         raise ValueError(f"annotator named twice: {annotators}")
     for a in annotators:
-        if not ANNOTATOR_RE.fullmatch(a):
-            raise ValueError(f"annotator {a!r}: use letters, digits, - or _ only")
+        check_annotator(a)
     ids = sorted(strata)
     n = len(ids) if n_shared == "all" else int(n_shared)
     if not 0 <= n <= len(ids):
@@ -152,7 +151,7 @@ def header(question: str, suffix: str = "") -> str:
     return f"{first.rstrip(':')} [{' | '.join(options)}]{suffix}"
 
 
-COL_ROW, COL_ID, COL_QUESTION = "row", "query_id", "question"
+COL_ROW, COL_ANNOTATOR, COL_ID, COL_QUESTION = "row", "annotator", "query_id", "question"
 COL_ANSWER, COL_RATIONALE, COL_PASSAGES = "response: answer", "response: rationale", "passages"
 COL_A = header(PASS_A_QUESTION)
 COL_CONFIDENCE = header(CONFIDENCE_QUESTION)
@@ -203,17 +202,23 @@ def write_sheet(rows: list[dict], which: str, seed: int, annotator: str,
                 csv_path: Path, template_path: Path) -> int:
     """Write the sheet to fill and a blank sittings template. Returns how many
     text cells start with a formula character (see `export_sheet`'s log)."""
-    columns = [COL_ROW, COL_ID, *TEXT_COLUMNS[which], *LABEL_COLUMNS[which]]
+    for p in (csv_path, template_path):
+        if p.exists():
+            raise FileExistsError(
+                f"{p} already exists — it may be a returned, filled sheet. Move it "
+                "elsewhere (or delete a blank one) to export again.")
+    columns = [COL_ROW, COL_ANNOTATOR, COL_ID, *TEXT_COLUMNS[which], *LABEL_COLUMNS[which]]
     risky = 0
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
+    # utf-8-sig: Excel reads a BOM-less file as cp1252 and garbles accents.
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=columns)
         w.writeheader()
         for n, row in enumerate(display_order(rows, seed, annotator, which), 1):
             cells = sheet_cells(row, which)
             risky += sum(cells[c].startswith(FORMULA_START) for c in TEXT_COLUMNS[which])
-            w.writerow({COL_ROW: n, **cells})
-    with template_path.open("w", newline="", encoding="utf-8") as f:
+            w.writerow({COL_ROW: n, COL_ANNOTATOR: annotator, **cells})
+    with template_path.open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["sitting", COL_START, COL_END])
         w.writerows([[i, "", ""] for i in range(1, SITTING_ROWS + 1)])
@@ -233,7 +238,7 @@ def load_sheet_rows(jsonl_path: Path, annotator: str, guide_version: str,
                     ids: set[str]) -> list[dict]:
     rows = read_rows(jsonl_path)
     check_header(rows, annotator, guide_version)
-    if any(r.get("timing") != TIMING for r in rows):
+    if file_timing(rows) != TIMING:
         raise AssertionError(f"{jsonl_path.name} is a terminal-labelled file, not a sheet file")
     if {r["query_id"] for r in rows} != ids:
         raise AssertionError(f"{jsonl_path.name} does not cover this annotator's assigned rows")
@@ -277,23 +282,31 @@ def _norm(s: str | None) -> str:
 
 
 def read_csv(path: Path) -> tuple[list[str], list[dict]]:
-    with Path(path).open(newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        table = list(reader)
-        return [c.strip() for c in reader.fieldnames or []], table
+    try:
+        with Path(path).open(newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            table = list(reader)
+            return [c.strip() for c in reader.fieldnames or []], table
+    except UnicodeDecodeError:
+        raise AssertionError(f"{Path(path).name} is not UTF-8 — save it again as "
+                             "'CSV UTF-8' (Excel) or download it as CSV (Google Sheets)")
 
 
-def parse_labels(path: Path, which: str, ids: set[str]) -> dict[str, dict]:
+def parse_labels(path: Path, which: str, ids: set[str], annotator: str) -> dict[str, dict]:
     """The filled sheet as {query id: {stored field: value}}, or an error that
     names every problem row. Case and spacing are forgiven; words are not."""
     columns, table = read_csv(path)
-    needed = [COL_ID, *LABEL_COLUMNS[which]]
+    needed = [COL_ANNOTATOR, COL_ID, *LABEL_COLUMNS[which]]
     absent = [c for c in needed if c not in columns]
     if absent:
         raise AssertionError(f"{Path(path).name} lacks the column(s) {absent} — is it "
                              f"the pass {which} sheet, with its header row unchanged?")
     table = [{k.strip(): v for k, v in r.items() if k} for r in table]
     table = [r for r in table if any(_norm(v) for v in r.values())]   # blank lines
+    owners = {_norm(r.get(COL_ANNOTATOR)) for r in table}
+    if owners != {annotator.lower()}:
+        raise AssertionError(f"{Path(path).name} is {sorted(owners)}'s sheet, not "
+                             f"{annotator!r}'s — import it under its own annotator")
 
     seen = [(r.get(COL_ID) or "").strip() for r in table]
     dupes = sorted({q for q in seen if seen.count(q) > 1})
@@ -310,7 +323,9 @@ def parse_labels(path: Path, which: str, ids: set[str]) -> dict[str, dict]:
         qid, labels = (r.get(COL_ID) or "").strip(), {}
         for col, (field, words) in LABEL_COLUMNS[which].items():
             vocab = {w.lower(): v for w, v in words.items()}
-            given = _norm(r.get(col))
+            # "refusal OK: a step is missing…" as the header shows it counts
+            # as "refusal OK"; no option word contains a colon.
+            given = _norm(r.get(col)).split(":")[0].strip()
             if field == "needs_common_knowledge":
                 if labels.get("refusal_ok_passages") is False:
                     if given not in vocab:
@@ -390,14 +405,15 @@ def import_sheet(which: str, jsonl_path: Path, csv_path: Path, sittings_csv: Pat
                  assignment: dict, annotator: str, guide_version: str) -> str:
     """Validate a filled sheet and write its labels into the annotator's file.
 
-    Returns "imported", or "unchanged" for a pass A re-import identical to the
-    locked labels. Nothing is written unless every row is valid.
+    Returns "imported", or "sittings" for a pass A re-import identical to the
+    locked labels (only its sittings are taken, so a mistyped time can still be
+    corrected). Nothing is written unless every row is valid.
     """
     ids = assigned_ids(assignment, annotator)
     if not jsonl_path.exists():
         raise FileNotFoundError(f"no label file at {jsonl_path} — export pass A first")
     rows = load_sheet_rows(jsonl_path, annotator, guide_version, ids)
-    labels = parse_labels(csv_path, which, ids)
+    labels = parse_labels(csv_path, which, ids, annotator)
     sittings = parse_sittings(sittings_csv)
     locked = rows[0]["pass_a_lock"] is not None
 
@@ -409,17 +425,21 @@ def import_sheet(which: str, jsonl_path: Path, csv_path: Path, sittings_csv: Pat
             raise AssertionError(
                 f"{len(changed)} pass A labels differ from the ones locked when pass B "
                 "was exported — pass A cannot change once the passages have been shown")
-        return "unchanged"
+    elif which == "A" and pass_b_started(rows):
+        raise AssertionError("this file has pass B labels but pass A was never locked")
     if which == "B":
         if not locked:
             raise AssertionError("pass B was never exported for this file — export it first")
         check_lock(rows, required=True)
 
-    for r in rows:
-        r.update(labels[r["query_id"]])
     record_path = sittings_path(jsonl_path)
     record = json.loads(record_path.read_text()) if record_path.exists() else {}
     record[which] = sittings
+    if which == "A" and locked:
+        record_path.write_text(json.dumps(record, indent=1) + "\n")
+        return "sittings"
+    for r in rows:
+        r.update(labels[r["query_id"]])
     save_rows(jsonl_path, rows)
     record_path.write_text(json.dumps(record, indent=1) + "\n")
     return "imported"
@@ -443,5 +463,5 @@ def check_sheet_file(jsonl_path: Path, rows: list[dict], assignment: dict,
 
 
 def is_sheet_file(path: Path) -> bool:
-    return path.exists() and any(r.get("timing") == TIMING for r in read_rows(path))
+    return path.exists() and file_timing(read_rows(path)) == TIMING
 

@@ -53,12 +53,16 @@ def jsonl(tmp_path):
 
 
 def export(which, jsonl, assignment, annotator="v1", version="0.1"):
+    """Export once; later calls reuse the file (re-exporting is refused)."""
+    csv_path, template = sheets.sheet_paths(jsonl, annotator, which)
+    if csv_path.exists():
+        return csv_path, template, 0
     return sheets.export_sheet(which, jsonl, assignment, annotator, version,
                                GENS, CORPUS, QRELS)
 
 
 def read_table(path):
-    with path.open(newline="", encoding="utf-8") as f:
+    with path.open(newline="", encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
 
 
@@ -227,7 +231,7 @@ def test_an_identical_pass_a_reimport_after_pass_b_export_changes_nothing(tmp_pa
                                                                           assignment):
     do_pass_a(tmp_path, jsonl, assignment)
     export("B", jsonl, assignment)
-    assert do_pass_a(tmp_path, jsonl, assignment) == "unchanged"
+    assert do_pass_a(tmp_path, jsonl, assignment) == "sittings"
 
 
 def test_pass_b_import_is_refused_before_pass_b_export(tmp_path, jsonl, assignment):
@@ -235,8 +239,8 @@ def test_pass_b_import_is_refused_before_pass_b_export(tmp_path, jsonl, assignme
     fake = tmp_path / "b.csv"
     with fake.open("w", newline="") as f:
         w = csv.writer(f)
-        w.writerow([sheets.COL_ID, sheets.COL_B, sheets.COL_COMMON])
-        w.writerows([[q, "refusal OK", ""] for q in sheets.assigned_ids(assignment, "v1")])
+        w.writerow([sheets.COL_ANNOTATOR, sheets.COL_ID, sheets.COL_B, sheets.COL_COMMON])
+        w.writerows([["v1", q, "refusal OK", ""] for q in sheets.assigned_ids(assignment, "v1")])
     with pytest.raises(AssertionError, match="pass B was never exported"):
         sheets.import_sheet("B", jsonl, fake, sittings(tmp_path, ("9:00", "9:30")),
                             assignment, "v1", "0.1")
@@ -389,3 +393,73 @@ def test_the_label_file_stores_the_same_row_shape_as_the_terminal(tmp_path, json
     sheet_keys = set(twopass.read_rows(jsonl)[0])
     assert sheet_keys == set(twopass.read_rows(terminal)[0]) | {"timing"}
     assert json.loads(jsonl.read_text().splitlines()[0])["stratum"]["gold_in_context"] in (0, 1, 2)
+
+
+# ─────────────────────────── review fixes ───────────────────────────
+
+def test_one_annotators_sheet_is_refused_under_another_name(tmp_path, assignment):
+    """With every row shared, only the annotator column tells two sheets apart."""
+    every = sheets.make_assignment(sheets.batch_strata(GENS, QRELS), ["v1", "v2"], "all", seed=0)
+    v1_file, v2_file = tmp_path / "twopass__x__v1.jsonl", tmp_path / "twopass__x__v2.jsonl"
+    v1_csv, _, _ = export("A", v1_file, every, annotator="v1")
+    export("A", v2_file, every, annotator="v2")
+    filled = fill(v1_csv, {sheets.COL_A: "accept", sheets.COL_CONFIDENCE: "unsure"})
+    with pytest.raises(AssertionError, match="not 'v2'"):
+        sheets.import_sheet("A", v2_file, filled, sittings(tmp_path, ("9:00", "9:30")),
+                            every, "v2", "0.1")
+
+
+def test_a_pass_a_sitting_can_be_corrected_after_the_lock(tmp_path, jsonl, assignment):
+    do_pass_a(tmp_path, jsonl, assignment)
+    export("B", jsonl, assignment)
+    csv_path, _, _ = export("A", jsonl, assignment)
+    filled = fill(csv_path, {sheets.COL_A: "accept", sheets.COL_CONFIDENCE: "confident"})
+    assert sheets.import_sheet("A", jsonl, filled, sittings(tmp_path, ("10:00", "10:45")),
+                               assignment, "v1", "0.1") == "sittings"
+    record = json.loads(sheets.sittings_path(jsonl).read_text())
+    assert record["A"][0]["minutes"] == 45
+
+
+def test_an_existing_sheet_is_never_overwritten(jsonl, assignment):
+    sheets.export_sheet("A", jsonl, assignment, "v1", "0.1", GENS, CORPUS, QRELS)
+    with pytest.raises(FileExistsError, match="returned, filled sheet"):
+        sheets.export_sheet("A", jsonl, assignment, "v1", "0.1", GENS, CORPUS, QRELS)
+
+
+def test_sheets_carry_a_byte_order_mark_for_excel(jsonl, assignment):
+    csv_path, template, _ = export("A", jsonl, assignment)
+    assert csv_path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert template.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_a_sheet_saved_in_another_encoding_gets_a_clear_error(tmp_path, jsonl, assignment):
+    csv_path, _, _ = export("A", jsonl, assignment)
+    bad = tmp_path / "cp1252.csv"
+    bad.write_bytes(csv_path.read_bytes() + "Zoë".encode("cp1252"))
+    with pytest.raises(AssertionError, match="not UTF-8"):
+        sheets.parse_labels(bad, "A", sheets.assigned_ids(assignment, "v1"), "v1")
+
+
+def test_an_option_copied_with_its_explanation_is_accepted(tmp_path, jsonl, assignment):
+    do_pass_a(tmp_path, jsonl, assignment)
+    do_pass_b(tmp_path, jsonl, assignment,
+              label="refusal OK: a step is missing, the question is unclear, or the "
+                    "passages disagree")
+    assert {r["refusal_ok_passages"] for r in twopass.read_rows(jsonl)} == {True}
+
+
+def test_pass_a_import_is_refused_beside_unlocked_pass_b_labels(tmp_path, jsonl, assignment):
+    do_pass_a(tmp_path, jsonl, assignment)
+    rows = twopass.read_rows(jsonl)
+    rows[0]["refusal_ok_passages"] = True          # pass B label, no lock: a hand edit
+    twopass.save_rows(jsonl, rows)
+    with pytest.raises(AssertionError, match="never locked"):
+        do_pass_a(tmp_path, jsonl, assignment, label="reject")
+
+
+def test_a_file_mixing_terminal_and_sheet_rows_is_refused(jsonl, assignment):
+    export("A", jsonl, assignment)
+    rows = twopass.read_rows(jsonl)
+    del rows[0]["timing"]
+    with pytest.raises(AssertionError, match="mixes terminal rows and spreadsheet rows"):
+        twopass.file_timing(rows)
