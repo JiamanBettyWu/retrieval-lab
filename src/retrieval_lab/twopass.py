@@ -176,8 +176,13 @@ def write_twopass_sheet(gens: list[Generation], corpus: dict, qrels: dict, path:
 
     `gold` (e.g. {1, 2}) leaves the other strata off. The filter runs here, at
     write time, and is recorded on every row as `gold_kept`, so `--check` knows
-    which rows to expect; the stratum itself is still never shown.
+    which rows to expect. Whoever writes the sheet knows which strata are on it;
+    which of them a given row is stays hidden, which is why `gold` must name at
+    least two strata — a one-stratum sheet would show every row's stratum.
     """
+    if gold is not None and len(gold) < 2:
+        raise ValueError(f"--gold {' '.join(map(str, sorted(gold)))}: name at least two "
+                         "strata; a one-stratum sheet shows every row's stratum")
     if path.exists():
         raise FileExistsError(
             f"{path} already exists — it holds {annotator}'s labels. "
@@ -186,8 +191,11 @@ def write_twopass_sheet(gens: list[Generation], corpus: dict, qrels: dict, path:
     eligible, counts = eligible_rows(gens)
     kept = keep_gold(eligible, qrels, gold)
     counts["other_strata"] = len(eligible) - len(kept)
-    if not kept:
+    counts["on_sheet"] = len(kept)
+    if not eligible:
         raise ValueError("this batch has no refused rows to label")
+    if not kept:
+        raise ValueError(f"--gold leaves none of the batch's {len(eligible)} refused rows")
     rows = [twopass_row(g, corpus, qrels, annotator, guide_version) for g in kept]
     if gold is not None:
         for r in rows:
@@ -206,7 +214,7 @@ def expected_ids(rows: list[dict], gens: list[Generation], load_qrels) -> set[st
     if len(filters) > 1:
         raise AssertionError("rows in this file were written under different --gold filters")
     eligible = eligible_rows(gens)[0]
-    (gold,) = filters
+    gold = filters.pop() if filters else None
     if gold is not None:
         eligible = keep_gold(eligible, load_qrels(), set(gold))
     return {g.query_id for g in eligible}
@@ -498,8 +506,9 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
     if (shared != "0" or assign_seed != 0) and not assign:
         raise SystemExit("--shared and --assign-seed go with --assign")
     if gold and any(actions):
-        raise SystemExit("--gold applies when writing a terminal sheet; --label and "
-                         "--check read it back from the file")
+        raise SystemExit("--gold applies only when writing a terminal sheet: --label and "
+                         "--check read it back from the file, and the spreadsheet actions "
+                         "(--assign, --export-sheet, --import-sheet) do not take it")
     excluded = excluded_ids(exclude)
     gens = load_generations(dataset, model, top_k, n_context, generator, n_queries,
                             seed, excluded)
@@ -603,8 +612,7 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
     if gold:
         log.info("other strata   : %d  (left off the sheet: --gold %s)",
                  counts["other_strata"], " ".join(map(str, sorted(gold))))
-    log.info("on the sheet   : %d",
-             counts["refused"] - counts["cut_off"] - counts["other_strata"])
+    log.info("on the sheet   : %d", counts["on_sheet"])
     log.info("\nsheet -> %s", path)
     log.info("Label it: python -m retrieval_lab.twopass %s --label", flags)
 
