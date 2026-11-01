@@ -163,21 +163,53 @@ def twopass_row(gen: Generation, corpus: dict, qrels: dict, annotator: str,
     }
 
 
+def keep_gold(gens: list[Generation], qrels: dict, gold) -> list[Generation]:
+    """The rows whose `gold_in_context` is in `gold`; all of them when `gold` is None."""
+    if gold is None:
+        return list(gens)
+    return [g for g in gens if gold_in_context(qrels, g.query_id, g.doc_ids) in gold]
+
+
 def write_twopass_sheet(gens: list[Generation], corpus: dict, qrels: dict, path: Path,
-                        annotator: str, guide_version: str) -> dict[str, int]:
-    """Write a fresh sheet. Never overwrites: the file holds hand labels."""
+                        annotator: str, guide_version: str, gold=None) -> dict[str, int]:
+    """Write a fresh sheet. Never overwrites: the file holds hand labels.
+
+    `gold` (e.g. {1, 2}) leaves the other strata off. The filter runs here, at
+    write time, and is recorded on every row as `gold_kept`, so `--check` knows
+    which rows to expect; the stratum itself is still never shown.
+    """
     if path.exists():
         raise FileExistsError(
             f"{path} already exists — it holds {annotator}'s labels. "
             "Continue it with --label; it is never rewritten."
         )
-    kept, counts = eligible_rows(gens)
+    eligible, counts = eligible_rows(gens)
+    kept = keep_gold(eligible, qrels, gold)
+    counts["other_strata"] = len(eligible) - len(kept)
     if not kept:
         raise ValueError("this batch has no refused rows to label")
     rows = [twopass_row(g, corpus, qrels, annotator, guide_version) for g in kept]
+    if gold is not None:
+        for r in rows:
+            r["gold_kept"] = sorted(gold)
     path.parent.mkdir(parents=True, exist_ok=True)
     save_rows(path, rows)
     return counts
+
+
+def expected_ids(rows: list[dict], gens: list[Generation], load_qrels) -> set[str]:
+    """The query ids a finished file must cover: the batch's eligible rows,
+    narrowed by the `gold_kept` filter recorded at write time, if any.
+    `load_qrels` is called only when a filter is recorded."""
+    filters = {tuple(r["gold_kept"]) if r.get("gold_kept") is not None else None
+               for r in rows}
+    if len(filters) > 1:
+        raise AssertionError("rows in this file were written under different --gold filters")
+    eligible = eligible_rows(gens)[0]
+    (gold,) = filters
+    if gold is not None:
+        eligible = keep_gold(eligible, load_qrels(), set(gold))
+    return {g.query_id for g in eligible}
 
 
 def read_rows(path: Path) -> list[dict]:
@@ -452,7 +484,8 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          check: bool, model: str = BI_ENCODER, generator: str = GENERATOR,
          exclude: list[str] | None = None, assign: list[str] | None = None,
          shared: str = "0", assign_seed: int = 0, export_sheet: str | None = None,
-         import_sheet: Path | None = None, sittings: Path | None = None) -> None:
+         import_sheet: Path | None = None, sittings: Path | None = None,
+         gold: list[int] | None = None) -> None:
     from . import sheets          # imports this module; deferred to avoid a cycle
 
     actions = [label, check, bool(assign), bool(export_sheet), bool(import_sheet)]
@@ -464,6 +497,9 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
         raise SystemExit("--sittings goes with --import-sheet")
     if (shared != "0" or assign_seed != 0) and not assign:
         raise SystemExit("--shared and --assign-seed go with --assign")
+    if gold and any(actions):
+        raise SystemExit("--gold applies when writing a terminal sheet; --label and "
+                         "--check read it back from the file")
     excluded = excluded_ids(exclude)
     gens = load_generations(dataset, model, top_k, n_context, generator, n_queries,
                             seed, excluded)
@@ -550,12 +586,13 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
                      minutes["A"], minutes["A"] / len(rows),
                      minutes["B"], minutes["B"] / len(rows))
             return
-        validate_twopass(rows, {g.query_id for g in eligible_rows(gens)[0]})
+        validate_twopass(rows, expected_ids(rows, gens, lambda: load_beir(dataset)[2]))
         log.info("labels OK: %d rows, both passes complete, anchored to the batch", len(rows))
         return
 
     corpus, _queries, qrels = load_beir(dataset)
-    counts = write_twopass_sheet(gens, corpus, qrels, path, annotator, guide_version)
+    counts = write_twopass_sheet(gens, corpus, qrels, path, annotator, guide_version,
+                                 set(gold) if gold else None)
     log.info("\n=== two-pass sheet (%s) ===", annotator)
     log.info("batch rows     : %d", counts["batch"])
     log.info("refused        : %d", counts["refused"])
@@ -563,7 +600,11 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
              counts["cut_off"])
     log.info("not recorded   : %d  (on the sheet; the cap was not recorded)",
              counts["not_recorded"])
-    log.info("on the sheet   : %d", counts["refused"] - counts["cut_off"])
+    if gold:
+        log.info("other strata   : %d  (left off the sheet: --gold %s)",
+                 counts["other_strata"], " ".join(map(str, sorted(gold))))
+    log.info("on the sheet   : %d",
+             counts["refused"] - counts["cut_off"] - counts["other_strata"])
     log.info("\nsheet -> %s", path)
     log.info("Label it: python -m retrieval_lab.twopass %s --label", flags)
 
@@ -602,8 +643,11 @@ if __name__ == "__main__":
                    help="with --import-sheet: the filled sittings sheet for that pass")
     p.add_argument("--model", default=BI_ENCODER, help=MODEL_HELP)
     p.add_argument("--generator", default=GENERATOR)
+    p.add_argument("--gold", type=int, nargs="+", choices=[0, 1, 2], metavar="N",
+                   help="when writing a terminal sheet: keep only refusals with this many "
+                        "gold passages in context (e.g. --gold 1 2); recorded in the file")
     args = p.parse_args()
     main(args.dataset, args.n_queries, args.n_context, args.top_k, args.seed,
          args.annotator, args.guide_version, args.out, args.label, args.check,
          args.model, args.generator, args.exclude, args.assign, args.shared,
-         args.assign_seed, args.export_sheet, args.import_sheet, args.sittings)
+         args.assign_seed, args.export_sheet, args.import_sheet, args.sittings, args.gold)
