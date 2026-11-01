@@ -30,6 +30,9 @@ python -m retrieval_lab.fixture --n-queries 30 --seed 1 --check   # ... verify t
 python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator NAME --guide-version V           # two-pass refusal sheet (--out DIR to write elsewhere)
 python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator NAME --guide-version V --label   # ... pass A over every row, then pass B (resumable)
 python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator NAME --guide-version V --check   # ... verify both passes
+python -m retrieval_lab.twopass --n-queries 30 --seed 2 --assign V1 V2 --shared all            # spreadsheet annotators: split the rows (written once)
+python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator V1 --guide-version V --export-sheet pass-a   # ... their pass A CSV (no passages)
+python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator V1 --guide-version V --import-sheet F.csv --sittings S.csv   # ... read it back; then pass-b the same way
 
 python -m retrieval_lab.judge --smoke                             # Phase 4c.2: can the candidates follow the format? (live, writes nothing)
 python -m retrieval_lab.judge --bakeoff                           # ... score every candidate against the labelled fixture
@@ -90,7 +93,7 @@ NFCorpus queries are terse topic strings rather than answerable questions. Phase
 `data.py` loads BEIR (corpus, queries, **qrels** — the ground-truth labels).
 `retrieve.py` embeds and ranks. `cache.py` persists the result.
 `evaluate.py`, `oracle.py` and `rerank.py` are the Phase 0-2 entrypoints;
-`hotpot_pool.py`, `generate.py`, `fixture.py`, `twopass.py` and `judge.py` are
+`hotpot_pool.py`, `generate.py`, `fixture.py`, `twopass.py` (with `sheets.py`) and `judge.py` are
 Phase 4's.
 `observability.py` shims Weave's `@op` so every phase runs with weave absent or
 uninitialized.
