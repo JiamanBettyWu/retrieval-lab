@@ -42,7 +42,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .fixture import gold_in_context, save_rows
-from .generate import Generation
+from .generate import SENTINEL, Generation
 from .twopass import (COMMON_KNOWLEDGE_CHOICES, COMMON_KNOWLEDGE_QUESTION,
                       CONFIDENCE_CHOICES, CONFIDENCE_QUESTION, PASS_A_CHOICES,
                       PASS_A_QUESTION, PASS_B_CHOICES, PASS_B_QUESTION, TIMING_SESSION,
@@ -152,7 +152,7 @@ def header(question: str, suffix: str = "") -> str:
 
 
 COL_ROW, COL_ANNOTATOR, COL_ID, COL_QUESTION = "row", "annotator", "query_id", "question"
-COL_ANSWER, COL_RATIONALE, COL_PASSAGES = "response: answer", "response: rationale", "passages"
+COL_RESPONSE, COL_PASSAGES = "response", "passages"
 COL_A = header(PASS_A_QUESTION)
 COL_CONFIDENCE = header(CONFIDENCE_QUESTION)
 COL_B = header(PASS_B_QUESTION)
@@ -166,8 +166,8 @@ LABEL_COLUMNS = {
     "B": {COL_B: ("refusal_ok_passages", dict(PASS_B_CHOICES.values())),
           COL_COMMON: ("needs_common_knowledge", dict(COMMON_KNOWLEDGE_CHOICES.values()))},
 }
-TEXT_COLUMNS = {"A": [COL_QUESTION, COL_ANSWER, COL_RATIONALE],
-                "B": [COL_QUESTION, COL_PASSAGES, COL_ANSWER, COL_RATIONALE]}
+TEXT_COLUMNS = {"A": [COL_QUESTION, COL_RESPONSE],
+                "B": [COL_QUESTION, COL_PASSAGES, COL_RESPONSE]}
 
 
 def sheet_paths(jsonl_path: Path, annotator: str, which: str) -> tuple[Path, Path]:
@@ -189,10 +189,19 @@ def display_order(rows: list[dict], seed: int, annotator: str, which: str) -> li
     return out
 
 
+def response_cell(row: dict) -> str:
+    """The reply as one cell. On a refusal the answer field is nearly always the
+    bare sentinel, which says nothing, so it is left out; any other answer text
+    (the sentinel plus words, which still counts as a refusal) comes first."""
+    answer = row["reply_answer"].strip()
+    if answer and answer.upper() != SENTINEL:
+        return f"Answer given: {answer}\n\n{row['reply_rationale']}"
+    return row["reply_rationale"]
+
+
 def sheet_cells(row: dict, which: str) -> dict:
     cells = {COL_ID: row["query_id"], COL_QUESTION: row["question"],
-             COL_ANSWER: row["reply_answer"] or "(none given)",
-             COL_RATIONALE: row["reply_rationale"]}
+             COL_RESPONSE: response_cell(row)}
     if which == "B":
         cells[COL_PASSAGES] = "\n\n".join(row["passages"])
     return cells

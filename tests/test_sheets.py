@@ -463,3 +463,18 @@ def test_a_file_mixing_terminal_and_sheet_rows_is_refused(jsonl, assignment):
     del rows[0]["timing"]
     with pytest.raises(AssertionError, match="mixes terminal rows and spreadsheet rows"):
         twopass.file_timing(rows)
+
+
+def test_the_bare_sentinel_answer_is_left_off_the_sheet(jsonl, assignment):
+    csv_path, _, _ = export("A", jsonl, assignment)
+    table = read_table(csv_path)
+    assert "INSUFFICIENT_CONTEXT" not in csv_path.read_text(encoding="utf-8-sig")
+    assert all(r[sheets.COL_RESPONSE] == "The passages do not name the architect."
+               for r in table)
+
+
+def test_answer_text_beyond_the_sentinel_stays_on_the_sheet():
+    row = {"reply_answer": "Ingrid Moe, 1998 — INSUFFICIENT_CONTEXT",
+           "reply_rationale": "Not certain."}
+    assert sheets.response_cell(row) == ("Answer given: Ingrid Moe, 1998 — "
+                                         "INSUFFICIENT_CONTEXT\n\nNot certain.")
