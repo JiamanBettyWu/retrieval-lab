@@ -79,14 +79,36 @@ COMMON_KNOWLEDGE_QUESTION = ("Does reaching the answer need a fact that is not i
 
 ANNOTATOR_RE = re.compile(r"[A-Za-z0-9_-]+")
 
+# Rows labelled in a spreadsheet (`sheets.py`) carry `timing: "session"`: a
+# sheet cannot time a row, so their `seconds_*` fields stay empty and the time
+# is recorded per sitting instead.
+TIMING_SESSION = "session"
 
-def twopass_path(out_dir: Path, generation_path: Path, annotator: str) -> Path:
-    """One file per (batch, annotator). The batch's own name is the key, so
+
+def batch_name(generation_path: Path) -> str:
+    """The batch's own cache name, the key every label file of it shares, so
     every key component — exclusions included — carries over unchanged."""
+    return Path(generation_path).stem.removeprefix("gen__")
+
+
+def check_annotator(annotator: str) -> None:
     if not ANNOTATOR_RE.fullmatch(annotator):
         raise ValueError(f"annotator {annotator!r}: use letters, digits, - or _ only")
-    batch = generation_path.stem.removeprefix("gen__")
-    return Path(out_dir) / f"twopass__{batch}__{annotator}.jsonl"
+
+
+def twopass_path(out_dir: Path, generation_path: Path, annotator: str) -> Path:
+    """One file per (batch, annotator)."""
+    check_annotator(annotator)
+    return Path(out_dir) / f"twopass__{batch_name(generation_path)}__{annotator}.jsonl"
+
+
+def file_timing(rows: list[dict]) -> str:
+    """"session" for a file labelled in spreadsheets, "row" for a terminal one.
+    A file mixing the two was edited by hand, and neither path may take it."""
+    kinds = {r.get("timing") == TIMING_SESSION for r in rows}
+    if len(kinds) > 1:
+        raise AssertionError("this file mixes terminal rows and spreadsheet rows")
+    return TIMING_SESSION if kinds == {True} else "row"
 
 
 def eligible_rows(gens: list[Generation]) -> tuple[list[Generation], dict[str, int]]:
@@ -162,12 +184,20 @@ def read_rows(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def required_fields(row: dict, fields: tuple) -> list[str]:
+    """The fields a finished row must fill: no per-row seconds on a sheet row."""
+    if row.get("timing") == TIMING_SESSION:
+        return [f for f in fields if not f.startswith("seconds_")]
+    return list(fields)
+
+
 def pass_a_done(row: dict) -> bool:
-    return all(row[f] is not None for f in PASS_A_FIELDS)
+    return all(row[f] is not None for f in required_fields(row, PASS_A_FIELDS))
 
 
 def pass_b_done(row: dict) -> bool:
-    return all(row[f] is not None for f in PASS_B_FIELDS if f != "needs_common_knowledge")
+    return all(row[f] is not None for f in required_fields(row, PASS_B_FIELDS)
+               if f != "needs_common_knowledge")
 
 
 def pass_b_started(rows: list[dict]) -> bool:
@@ -280,6 +310,11 @@ def label_twopass(path: Path, annotator: str, guide_version: str,
     """
     rows = read_rows(path)
     check_header(rows, annotator, guide_version)
+    if file_timing(rows) == TIMING_SESSION:
+        raise AssertionError(
+            f"{path.name} is labelled through spreadsheets (--export-sheet / "
+            "--import-sheet); its rows have no per-row timing to add to"
+        )
     which = current_pass(rows)
     if which is None:
         say(f"{path.name}: both passes complete ({len(rows)} rows). Verify with --check.")
@@ -383,14 +418,21 @@ def validate_twopass(rows: list[dict], expected_ids: set[str]) -> None:
         bad = [r["query_id"] for r in rows if r[field] not in values]
         if bad:
             raise AssertionError(f"{len(bad)} rows have no valid '{field}' (e.g. {bad[:3]})")
+    timed = [r for r in rows if r.get("timing") != TIMING_SESSION]
     for field in ("seconds_response", "seconds_passages"):
         total = f"{field}_total"
-        bad = [r["query_id"] for r in rows
+        bad = [r["query_id"] for r in timed
                if not all(isinstance(r[f], (int, float)) for f in (field, total))
                or not 0 <= r[field] <= r[total]]
         if bad:
             raise AssertionError(
                 f"{len(bad)} rows have no valid '{field}' / '{total}' (e.g. {bad[:3]})")
+    # A sheet row's time is per sitting; a per-row number on one was typed in.
+    bad = [r["query_id"] for r in rows if r.get("timing") == TIMING_SESSION
+           and any(r[f] is not None for f in PASS_A_FIELDS + PASS_B_FIELDS
+                   if f.startswith("seconds_"))]
+    if bad:
+        raise AssertionError(f"{len(bad)} sheet rows carry per-row seconds (e.g. {bad[:3]})")
     # The checkbox exists only on over-refusals: missing there, or present
     # anywhere else, is a file that was edited by hand.
     bad = [r["query_id"] for r in rows
@@ -406,19 +448,87 @@ def validate_twopass(rows: list[dict], expected_ids: set[str]) -> None:
 
 
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
-         annotator: str, guide_version: str, out_dir: Path, label: bool, check: bool,
-         model: str = BI_ENCODER, generator: str = GENERATOR,
-         exclude: list[str] | None = None) -> None:
+         annotator: str | None, guide_version: str | None, out_dir: Path, label: bool,
+         check: bool, model: str = BI_ENCODER, generator: str = GENERATOR,
+         exclude: list[str] | None = None, assign: list[str] | None = None,
+         shared: str = "0", assign_seed: int = 0, export_sheet: str | None = None,
+         import_sheet: Path | None = None, sittings: Path | None = None) -> None:
+    from . import sheets          # imports this module; deferred to avoid a cycle
+
+    actions = [label, check, bool(assign), bool(export_sheet), bool(import_sheet)]
+    if sum(actions) > 1:
+        raise SystemExit("use one of --label, --check, --assign, --export-sheet, --import-sheet")
+    # A flag without its parent would otherwise fall through to the default
+    # action and write a new terminal sheet.
+    if sittings and not import_sheet:
+        raise SystemExit("--sittings goes with --import-sheet")
+    if (shared != "0" or assign_seed != 0) and not assign:
+        raise SystemExit("--shared and --assign-seed go with --assign")
     excluded = excluded_ids(exclude)
     gens = load_generations(dataset, model, top_k, n_context, generator, n_queries,
                             seed, excluded)
     gen_path = generation_cache_path(dataset, model, top_k, n_context, generator,
                                      PROMPT_VERSION, n_queries, seed, excluded)
+    flags = batch_flags(dataset, n_queries, n_context, top_k, seed, model, generator, exclude)
+    if Path(out_dir) != LABELS_DIR:
+        flags += f" --out {shlex.quote(str(out_dir))}"
+
+    if assign:
+        _corpus, _queries, qrels = load_beir(dataset)
+        assignment = sheets.make_assignment(sheets.batch_strata(gens, qrels), assign,
+                                            shared, assign_seed)
+        apath = sheets.assignment_path(out_dir, gen_path)
+        sheets.write_assignment(apath, assignment)
+        log.info("\n=== assignment (seed %d) ===", assign_seed)
+        log.info("rows to label  : %d", assignment["n_rows"])
+        log.info("shared         : %d  (every annotator labels these)", len(assignment["shared"]))
+        for name, own in assignment["own"].items():
+            log.info("%-15s: %d own + %d shared = %d", name, len(own),
+                     len(assignment["shared"]), len(own) + len(assignment["shared"]))
+        log.info("\nassignment -> %s", apath)
+        return
+
+    if not annotator or not guide_version:
+        raise SystemExit("--annotator and --guide-version are required")
     path = twopass_path(out_dir, gen_path, annotator)
-    flags = (batch_flags(dataset, n_queries, n_context, top_k, seed, model,
-                         generator, exclude)
-             + f" --annotator {annotator} --guide-version {shlex.quote(guide_version)}"
-             + (f" --out {shlex.quote(str(out_dir))}" if Path(out_dir) != LABELS_DIR else ""))
+    flags += f" --annotator {annotator} --guide-version {shlex.quote(guide_version)}"
+
+    if export_sheet or import_sheet:
+        assignment = sheets.read_assignment(sheets.assignment_path(out_dir, gen_path))
+        if path.exists():
+            load_labels(path, gens)     # anchor check: the batch was not regenerated
+        if export_sheet:
+            which = {"pass-a": "A", "pass-b": "B"}[export_sheet]
+            corpus = qrels = None
+            if which == "A" and not path.exists():
+                corpus, _queries, qrels = load_beir(dataset)
+            csv_path, template, risky = sheets.export_sheet(
+                which, path, assignment, annotator, guide_version, gens, corpus, qrels)
+            log.info("\n=== pass %s sheet for %s ===", which, annotator)
+            log.info("rows           : %d", len(sheets.assigned_ids(assignment, annotator)))
+            log.info("sheet          : %s", csv_path)
+            log.info("sittings sheet : %s", template)
+            log.info("\nIn Google Sheets, import with 'Convert text to numbers, dates, and "
+                     "formulas' unticked%s.",
+                     f" — {risky} text cells start with = + - or @" if risky else "")
+            log.info("Import it filled: python -m retrieval_lab.twopass %s --import-sheet "
+                     "<filled.csv> --sittings <sittings.csv>", flags)
+            return
+        if not sittings:
+            raise SystemExit("--import-sheet needs --sittings <the filled sittings sheet>")
+        which = sheets.sheet_pass(import_sheet)
+        result = sheets.import_sheet(which, path, import_sheet, sittings, assignment,
+                                     annotator, guide_version)
+        if result == "sittings":
+            log.info("pass A labels identical to the locked ones; sittings updated")
+        else:
+            log.info("pass %s imported: %d rows -> %s", which,
+                     len(sheets.assigned_ids(assignment, annotator)), path)
+        if which == "A":
+            log.info("Next: python -m retrieval_lab.twopass %s --export-sheet pass-b", flags)
+        else:
+            log.info("Next: python -m retrieval_lab.twopass %s --check", flags)
+        return
 
     if label or check:
         if not path.exists():
@@ -431,6 +541,15 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
             label_twopass(path, annotator, guide_version)
             return
         check_header(rows, annotator, guide_version)
+        if sheets.is_sheet_file(path):
+            assignment = sheets.read_assignment(sheets.assignment_path(out_dir, gen_path))
+            minutes = sheets.check_sheet_file(path, rows, assignment, annotator)
+            log.info("labels OK: %d rows, both passes complete, anchored to the batch",
+                     len(rows))
+            log.info("time: pass A %.1f min (%.2f per row), pass B %.1f min (%.2f per row)",
+                     minutes["A"], minutes["A"] / len(rows),
+                     minutes["B"], minutes["B"] / len(rows))
+            return
         validate_twopass(rows, {g.query_id for g in eligible_rows(gens)[0]})
         log.info("labels OK: %d rows, both passes complete, anchored to the batch", len(rows))
         return
@@ -460,18 +579,31 @@ if __name__ == "__main__":
                         "exclude__…json record; repeatable")
     p.add_argument("--n-context", type=int, default=10)
     p.add_argument("--top-k", type=int, default=100)
-    p.add_argument("--annotator", required=True, help="one file per annotator")
-    p.add_argument("--guide-version", required=True,
-                   help="the labelling guide's version; recorded on every row")
+    p.add_argument("--annotator", help="one file per annotator (required except with --assign)")
+    p.add_argument("--guide-version",
+                   help="the labelling guide's version; recorded on every row "
+                        "(required except with --assign)")
     p.add_argument("--out", type=Path, default=LABELS_DIR,
                    help=f"directory for the sheet (default {LABELS_DIR})")
     p.add_argument("--label", action="store_true",
                    help="label the current pass, one row at a time, resumably")
     p.add_argument("--check", action="store_true",
                    help="verify both passes are complete and anchored to the batch")
+    p.add_argument("--assign", nargs="+", metavar="NAME",
+                   help="split the batch between these spreadsheet annotators; written once")
+    p.add_argument("--shared", default="0",
+                   help="with --assign: rows every annotator labels, a count or 'all'")
+    p.add_argument("--assign-seed", type=int, default=0, help="with --assign: the split's seed")
+    p.add_argument("--export-sheet", choices=["pass-a", "pass-b"],
+                   help="write this annotator's CSV for one pass")
+    p.add_argument("--import-sheet", type=Path, metavar="CSV",
+                   help="read a filled CSV back (its pass is read from the header)")
+    p.add_argument("--sittings", type=Path, metavar="CSV",
+                   help="with --import-sheet: the filled sittings sheet for that pass")
     p.add_argument("--model", default=BI_ENCODER, help=MODEL_HELP)
     p.add_argument("--generator", default=GENERATOR)
     args = p.parse_args()
     main(args.dataset, args.n_queries, args.n_context, args.top_k, args.seed,
          args.annotator, args.guide_version, args.out, args.label, args.check,
-         args.model, args.generator, args.exclude)
+         args.model, args.generator, args.exclude, args.assign, args.shared,
+         args.assign_seed, args.export_sheet, args.import_sheet, args.sittings)
