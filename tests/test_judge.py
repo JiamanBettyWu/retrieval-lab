@@ -106,14 +106,30 @@ def test_refusal_rubric_rules_on_the_passages_not_the_rationale():
     test, and v1 of this prompt mirrored it — so the judge was graded against
     labels it was given a different rubric for. Pinned because the two blocks
     still coexist in fixture.py by design.
+
+    Rubric v3 rewrote this axis to the two-pass labelling rule (a refusal is an
+    over-refusal unless a step is missing, the question is unclear, or the
+    passages disagree). It kept "the passages, not the rationale" and reversed
+    one thing v2 said: common knowledge now counts as available. The phrases
+    below pin that, so a later edit cannot bring the v2 wording back unseen.
+    The 14 `refusal_ok` rows in fixture.py were labelled under v2.
     """
     refusal = build_judge_prompt(QUESTION, PASSAGES, "I cannot answer",
                                  RATIONALE, "refusal_ok")
     assert "OVER-REFUSAL" in refusal
     assert "question about the PASSAGES, not about the model's reasoning" in refusal
-    assert "ESTABLISH" in refusal and "SUGGEST" in refusal
-    # the superseded rule, which must NOT be what the judge is told
+    # v3: common knowledge is allowed in condition 1, and outside knowledge
+    # beyond it is still ruled out
+    assert "nor common knowledge" in refusal
+    assert "not what\nyou know from elsewhere" in refusal
+    # v3: an unconfirmed detail in the question blocks an answer only when it
+    # is what picks between candidates
+    assert "needed to choose between" in refusal
+    # v3: the default when none of the three conditions applies
+    assert "the answer is false (over-refusal)" in refusal
+    # superseded wording, which must NOT be what the judge is told
     assert "derivable from the passages" not in refusal
+    assert "ESTABLISH" not in refusal and "SUGGEST" not in refusal
 
 
 def test_the_grader_instruction_comes_after_the_content():

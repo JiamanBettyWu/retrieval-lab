@@ -92,7 +92,7 @@ CANDIDATES = ["mistral-small", "gemma3:4b"]
 # cache serving judgements made under the previous wording. It is in
 # `judgement_cache_path`, so a bump invalidates judgements without touching the
 # generations they scored.
-RUBRIC_VERSION = "v2"
+RUBRIC_VERSION = "v3"
 
 # The format gate for `rank_candidates`, fixed 2026-08-27 BEFORE any candidate
 # was run — same discipline as the κ band above, and for the same reason: a
@@ -175,6 +175,12 @@ def build_judge_prompt(question: str, passages: list[str], answer: str,
     a mistake this docstring used to invite, and doing so put the exact
     rubric-mismatch failure it warns about into this function (v1 -> v2).
 
+    From v3 that holds for `grounded` only. `refusal_ok` now carries the
+    two-pass labelling rule, the one `twopass.py`'s pass B labels are made
+    under, so that a judge verdict and a pass B label answer the same question.
+    The 14 `refusal_ok` rows in `fixture.py` were labelled under v2: a v3
+    bake-off κ on that axis would compare two different rules.
+
     Four design decisions live here, and they are yours:
 
     1. **How much of the rubric to include.** Naming the failure modes makes the
@@ -221,10 +227,11 @@ def build_judge_prompt(question: str, passages: list[str], answer: str,
 
     Bump RUBRIC_VERSION whenever you touch this.
     """
-    # Mirrors fixture.py's THE BOUNDARIES block. `grounded` reads the RATIONALE
-    # against its own citations; `refusal_ok` reads the PASSAGES and explicitly
-    # NOT the rationale — a model can refuse for a muddled reason on passages
-    # that genuinely support nothing, and that is still a calibrated refusal.
+    # `grounded` mirrors fixture.py's THE BOUNDARIES block and reads the
+    # RATIONALE against its own citations. `refusal_ok` (v3) is the two-pass
+    # labelling rule: it reads the PASSAGES and explicitly NOT the rationale —
+    # a model can refuse for a muddled reason on passages that support
+    # nothing, and that is still a correct refusal.
     RULES = {
         "grounded": """true  = EVERY clause of the model's rationale is supported by the passages it cites.
 false = any clause is unsupported, miscited, or reasoned past what the passage establishes.
@@ -240,18 +247,47 @@ Three specific ways a row is false:
 This is INDEPENDENT OF CORRECTNESS. A rationale whose short answer is right is
 still false when it is not verifiable from what it cites. Ask "could a reader
 verify this from the citations given", never "is this answer right".""",
-        "refusal_ok": """true  = these passages genuinely do NOT support an answer, so declining was the right call.
+        "refusal_ok": """true  = the passages do NOT support an answer to the question, so declining was the right call.
 false = OVER-REFUSAL: the passages DO support an answer and the model refused anyway.
 
-This is a question about the PASSAGES, not about the model's reasoning. Check the
-passages yourself; the model's rationale may be wrong. A refusal that turns on the
-question's exact phrasing while the passages establish the answer is an
-over-refusal, not calibration.
+This is a question about the PASSAGES, not about the model's reasoning. Check
+the passages yourself; the model's rationale may be wrong.
 
-Judge only what these passages ESTABLISH — not what you know from elsewhere. If the
-answer exists in the world but is not reachable from these passages, refusing was
-correct. And the bar is ESTABLISH, not SUGGEST: passages that point toward an
-answer without carrying it do not make it derivable.""",
+The passages support an answer UNLESS one of these happens:
+  1. A STEP IS MISSING. A fact needed to reach an answer is neither stated in
+     any passage nor common knowledge. Combining passages is allowed.
+     A detail in the question that the passages do not confirm is NOT a
+     missing step when the answer can be identified without it. It is a
+     missing step only when that detail is needed to choose between
+     possible answers.
+  2. THE QUESTION IS UNCLEAR, and the passages do not clear it up.
+  3. THE PASSAGES DISAGREE, and nothing says which is right.
+
+If none of the three happens, the answer is false (over-refusal).
+
+NEARLY COMPLETE IS NOT COMPLETE. One missing step means the refusal was
+correct (true). There is no "partly supported" verdict.
+
+ALWAYS ALLOWED when reaching an answer: rewording, simple logic, and
+arithmetic on stated numbers (for example, comparing two birth years).
+
+The answer you find does not have to match any particular answer; it only has
+to be supported by the passages.
+
+COMMON KNOWLEDGE. A fact that is not in the passages counts only if most
+adults anywhere in the world would know it (Paris is in France; a decade is
+ten years). Trivia does not count, even when it looks similar (Lyon is in
+France; who directed a particular film; which TV show an actor appeared in).
+A quick test: if a fair share of adults would get it wrong, it is not common
+knowledge.
+
+Apart from common knowledge, use only what these passages state, not what
+you know from elsewhere. If the answer exists in the world but cannot be
+reached from these passages plus common knowledge, refusing was correct
+(true).
+
+If you cannot decide whether a fact is common knowledge, treat it as NOT
+common knowledge: a step is then missing, and the refusal was correct (true).""",
     }
     if axis not in RULES:
         # No silent fallthrough. A renamed or mistyped axis would otherwise be
