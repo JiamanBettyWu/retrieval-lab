@@ -1,6 +1,7 @@
 """Phase 4c.2: bake off judge candidates against the hand-labelled fixture.
 
     python -m retrieval_lab.judge --smoke                      # can they follow the format?
+    python -m retrieval_lab.judge --smoke 4 --axis refusal_ok  # ... on one axis's rule only
     python -m retrieval_lab.judge --bakeoff                    # every candidate
     python -m retrieval_lab.judge --bakeoff --judge gemma3:4b  # just one
 
@@ -763,7 +764,31 @@ def score_candidate(rows: list[dict], js: list[Judgement], judge: str) -> dict:
     }
 
 
-def smoke(judges: list[str], items: list[dict], n: int = 4) -> dict:
+def smoke_items(items: list[dict], n: int, axis: str | None = None) -> list[dict]:
+    """The first `n` items a smoke run judges, optionally from one axis only.
+
+    Without `axis` this is `items[:n]`, and on the seed 1 fixture the first four
+    items are all `grounded`: a smoke run after an edit to the `refusal_ok` rule
+    would send that rule to no model and still report 4/4. With `axis`, the run
+    is over the rule that was edited. Asking for an axis the batch has no row on
+    raises rather than smoke-testing nothing.
+    """
+    if axis is None:
+        return items[:n]
+    if axis not in AXIS_FOR.values():
+        raise ValueError(f"unknown axis {axis!r} — expected one of "
+                         f"{sorted(AXIS_FOR.values())}")
+    chosen = [it for it in items if it["axis"] == axis][:n]
+    if not chosen:
+        raise ValueError(f"no item on axis {axis!r} in this batch — nothing to smoke")
+    if len(chosen) < n:
+        log.warning("only %d item(s) on axis %s in this batch (asked for %d)",
+                    len(chosen), axis, n)
+    return chosen
+
+
+def smoke(judges: list[str], items: list[dict], n: int = 4,
+          axis: str | None = None) -> dict:
     """Can each candidate FOLLOW THE FORMAT? Live models, no cache, no κ.
 
     This exists because `tests/test_judge.py` cannot answer the question. Every
@@ -778,9 +803,10 @@ def smoke(judges: list[str], items: list[dict], n: int = 4) -> dict:
     trusting a miss rate.
     """
     out = {}
+    items = smoke_items(items, n, axis)
     for judge in judges:
         digest = ollama_digest(judge)
-        js = [judge_one(judge, digest, it, it["axis"]) for it in items[:n]]
+        js = [judge_one(judge, digest, it, it["axis"]) for it in items]
         parsed = sum(j.parsed for j in js)
         out[judge] = parsed / len(js)
         log.info("\n%s — parsed %d/%d, %.1fs/call", judge, parsed, len(js),
@@ -819,7 +845,8 @@ def report(scored: dict) -> None:
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          judges: list[str], refresh: bool, model: str = BI_ENCODER,
          generator: str = GENERATOR, smoke_n: int = 0,
-         exclude: list[str] | None = None) -> None:
+         exclude: list[str] | None = None,
+         smoke_axis: str | None = None) -> None:
     corpus, _queries, _qrels = load_beir(dataset)
     excluded = excluded_ids(exclude)
     gens = load_generations(dataset, model, top_k, n_context, generator,
@@ -839,7 +866,7 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
     items = judge_items(gens, corpus)
 
     if smoke_n:
-        smoke(judges, items, smoke_n)
+        smoke(judges, items, smoke_n, smoke_axis)
         log.info("\nSmoke only — nothing cached, no κ. Re-run with --bakeoff "
                  "once every candidate follows the format.")
         return
@@ -874,6 +901,9 @@ if __name__ == "__main__":
                    metavar="N",
                    help="judge N rows per candidate (default 4) and print the "
                         "raws — checks the prompt is followable, writes nothing")
+    p.add_argument("--axis", choices=sorted(AXIS_FOR.values()),
+                   help="with --smoke: take the N rows from this axis only, so "
+                        "the run exercises the rule that was just edited")
     p.add_argument("--refresh", action="store_true", help="re-judge, ignoring the cache")
     p.add_argument("--model", default=BI_ENCODER, help=MODEL_HELP)
     p.add_argument("--generator", default=GENERATOR)
@@ -884,6 +914,8 @@ if __name__ == "__main__":
     if not (args.bakeoff or args.smoke):
         p.error("nothing to do — pass --bakeoff to score every candidate, "
                 "or --smoke [N] to check the prompt against a live model first")
+    if args.axis and not args.smoke:
+        p.error("--axis only applies to --smoke")
     main(args.dataset, args.n_queries, args.n_context, args.top_k, args.seed,
          args.judges or CANDIDATES, args.refresh, args.model, args.generator,
-         args.smoke, args.exclude)
+         args.smoke, args.exclude, args.axis)

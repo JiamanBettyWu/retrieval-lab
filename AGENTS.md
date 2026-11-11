@@ -35,6 +35,7 @@ python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator V1 --guide-v
 python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator V1 --guide-version V --import-sheet F.csv --sittings S.csv   # ... read it back; then pass-b the same way
 
 python -m retrieval_lab.judge --smoke                             # Phase 4c.2: can the candidates follow the format? (live, writes nothing)
+python -m retrieval_lab.judge --smoke 4 --axis refusal_ok         # ... on one axis only: a plain --smoke takes the first rows, which can all be `grounded`
 python -m retrieval_lab.judge --bakeoff                           # ... score every candidate against the labelled fixture
 
 python -m retrieval_lab.finetune --smoke                          # Phase 2: throughput + path check
