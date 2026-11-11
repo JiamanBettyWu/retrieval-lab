@@ -2871,6 +2871,9 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "beir" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "sentence-transformers" },
 ]
 
@@ -2894,6 +2897,7 @@ requires-dist = [
     { name = "datasets", marker = "extra == 'train'", specifier = ">=4.0" },
     { name = "peft", marker = "extra == 'train'", specifier = ">=0.20" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "scipy", specifier = ">=1.7" },
     { name = "sentence-transformers", specifier = ">=3.0" },
     { name = "weave", marker = "extra == 'tracing'", specifier = ">=0.51" },
 ]

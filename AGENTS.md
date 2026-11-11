@@ -96,6 +96,8 @@ NFCorpus queries are terse topic strings rather than answerable questions. Phase
 `evaluate.py`, `oracle.py` and `rerank.py` are the Phase 0-2 entrypoints;
 `hotpot_pool.py`, `generate.py`, `fixture.py`, `twopass.py` (with `sheets.py`) and `judge.py` are
 Phase 4's.
+`stats.py` holds the interval for every reported proportion (`wilson_ci`); it
+imports no data, model or cache code, so analysis scripts can use it alone.
 `observability.py` shims Weave's `@op` so every phase runs with weave absent or
 uninitialized.
 
