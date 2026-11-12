@@ -417,3 +417,91 @@ def test_rulings_cached_before_the_cap_still_load():
            "raw": "<judge_answer>true</judge_answer>", "verdict": True,
            "parsed": True, "seconds": 1.0}
     assert judge.Judgement(**old).truncated is None
+
+
+# ─────────────────────────── review of PR #16 ───────────────────────────
+
+def sheet_dict(batch, ids, guide="0.1", flagged=True):
+    return {"gen_path": cache.CACHE_DIR / f"gen__{batch}.json", "guide_version": guide,
+            "rows": [{"query_id": q} for q in ids],
+            "pairs": [pair(True, flagged) for _ in ids]}
+
+
+def test_sheets_from_different_batches_pool_into_one_list(repo):
+    pairs, why_not = judge.pooled_pairs([sheet_dict("a", ["q1", "q2"]),
+                                         sheet_dict("b", ["q1"])])
+    assert len(pairs) == 3 and why_not == ""      # q1 of batch a is not q1 of batch b
+
+
+def test_a_row_on_two_sheets_is_not_pooled(repo):
+    """Two annotators on one batch share ONE ruling per row. Pooled, each
+    ruling would be counted twice and the interval computed over twice the rows."""
+    pairs, why_not = judge.pooled_pairs([sheet_dict("a", ["q1", "q2"]),
+                                         sheet_dict("a", ["q2", "q4"])])
+    assert pairs is None and "1 rows are on more than one sheet" in why_not
+
+
+def test_sheets_under_different_guide_versions_are_not_pooled(repo):
+    pairs, why_not = judge.pooled_pairs([sheet_dict("a", ["q1"], guide="0.1"),
+                                         sheet_dict("b", ["q1"], guide="0.2")])
+    assert pairs is None and "guide versions 0.1, 0.2" in why_not
+
+
+def test_two_annotators_on_one_batch_get_two_tables_and_no_pool(repo, monkeypatch, caplog):
+    a = finish(new_sheet(repo, "betty"), "betty")
+    b = finish(new_sheet(repo, "v1"), "v1")
+    FakeJudge(monkeypatch, VERDICTS)
+    with caplog.at_level("INFO", logger="retrieval_lab"):
+        judge.main_twopass([str(a), str(b)], "toy-judge", DATASET)
+    assert "no pooled table: 3 rows are on more than one sheet" in caplog.text
+    assert "pooled (" not in caplog.text
+    assert "betty · guide 0.1 ·" in caplog.text and "v1 · guide 0.1 ·" in caplog.text
+
+
+def test_a_file_that_is_not_a_two_pass_sheet_gets_a_plain_error(repo):
+    other = repo / "labels" / "fixture__toyset__n30__seed1.jsonl"
+    other.write_text(json.dumps({"query_id": "q1", "grounded": True}) + "\n")
+    with pytest.raises(ValueError, match="is not a two-pass sheet"):
+        judge.locate_sheet(other, DATASET)
+    empty = repo / "labels" / f"twopass__{BATCH}__betty.jsonl"
+    empty.write_text("")
+    with pytest.raises(ValueError, match="is not a two-pass sheet: this file has no rows"):
+        judge.locate_sheet(empty, DATASET)
+    with pytest.raises(FileNotFoundError, match="no sheet at"):
+        judge.locate_sheet(repo / "labels" / "missing.jsonl", DATASET)
+
+
+def test_a_wrong_dataset_stops_before_the_corpus_loads(repo, monkeypatch):
+    path = finish(new_sheet(repo))
+    monkeypatch.setattr(judge, "load_beir", lambda dataset: pytest.fail(
+        "the corpus was loaded before the sheet's name was checked"))
+    with pytest.raises(ValueError, match="is not a otherset batch"):
+        judge.main_twopass([str(path)], "toy-judge", "otherset")
+
+
+def test_check_file_checks_an_annotator_given_on_its_own(repo):
+    """Given only one of the two, it used to re-read both from the file and
+    compare the file with itself."""
+    path = finish(new_sheet(repo))
+    gen_path = cache.CACHE_DIR / f"gen__{BATCH}.json"
+    with pytest.raises(AssertionError, match="not 'v1'"):
+        twopass.check_file(path, GENS, gen_path, lambda: QRELS, annotator="v1")
+    with pytest.raises(AssertionError, match="not '9.9'"):
+        twopass.check_file(path, GENS, gen_path, lambda: QRELS, guide_version="9.9")
+    rows, minutes = twopass.check_file(path, GENS, gen_path, lambda: QRELS, annotator="betty")
+    assert len(rows) == 3 and minutes is None
+
+
+def test_sheet_batch_undoes_twopass_path(repo):
+    gen_path = cache.CACHE_DIR / f"gen__{BATCH}.json"
+    for annotator in ("betty", "v__1"):
+        path = twopass.twopass_path(repo / "labels", gen_path, annotator)
+        assert twopass.sheet_batch(path, annotator) == twopass.batch_name(gen_path)
+
+
+def test_the_bakeoff_says_its_refusal_rows_were_labelled_under_another_rubric(caplog):
+    scored = {"m": {"kappa": 0.5, "kappa_refusal": 0.1, "n": 16, "n_refusal": 14,
+                    "miss_rate": 0.0, "sec_per_call": 1.0, "digest": "abc"}}
+    with caplog.at_level("INFO", logger="retrieval_lab"):
+        judge.report(scored)
+    assert ("NOT LIKE FOR LIKE" in caplog.text) == (judge.RUBRIC_VERSION != "v2")

@@ -309,10 +309,10 @@ def _capture_requests(monkeypatch, payload):
 
 
 def test_the_cap_is_sent_only_when_one_is_given(monkeypatch):
-    """`call_ollama` is the judge's path and must stay uncapped."""
+    """No cap is sent unless the caller names one."""
     sent = _capture_requests(monkeypatch, {"response": "ok", "done_reason": "stop"})
     generate.ollama_generate("p", max_tokens=7)
-    assert generate.call_ollama("p") == "ok"
+    assert generate.ollama_generate("p")["response"] == "ok"
     assert sent[0]["options"] == {"temperature": 0, "num_predict": 7}
     assert sent[1]["options"] == {"temperature": 0}
 

@@ -102,6 +102,21 @@ def twopass_path(out_dir: Path, generation_path: Path, annotator: str) -> Path:
     return Path(out_dir) / f"twopass__{batch_name(generation_path)}__{annotator}.jsonl"
 
 
+def sheet_batch(path: Path, annotator: str) -> str:
+    """The inverse of `twopass_path`: the batch name inside a sheet's file name.
+
+    The annotator is passed in (read from the rows), not split off the name:
+    an annotator name may itself contain `__`.
+    """
+    prefix, suffix = "twopass__", f"__{annotator}.jsonl"
+    name = Path(path).name
+    if not (name.startswith(prefix) and name.endswith(suffix)
+            and len(name) > len(prefix) + len(suffix)):
+        raise ValueError(f"{name}: expected {prefix}<batch>{suffix}, the name "
+                         "`twopass.py` gives this annotator's sheet")
+    return name[len(prefix):-len(suffix)]
+
+
 def file_timing(rows: list[dict]) -> str:
     """"session" for a file labelled in spreadsheets, "row" for a terminal one.
     A file mixing the two was edited by hand, and neither path may take it."""
@@ -490,6 +505,11 @@ def validate_twopass(rows: list[dict], expected_ids: set[str]) -> None:
 def sheet_header(rows: list[dict]) -> tuple[str, str]:
     """The one annotator and the one guide version a file was written under,
     read from its rows. Raises unless there is exactly one of each."""
+    if not rows:
+        raise AssertionError("this file has no rows")
+    if any("annotator" not in r or "guide_version" not in r for r in rows):
+        raise AssertionError("not a two-pass label file: rows lack `annotator` "
+                             "or `guide_version`")
     who = {r["annotator"] for r in rows}
     versions = {r["guide_version"] for r in rows}
     if len(who) != 1 or len(versions) != 1:
@@ -508,15 +528,18 @@ def check_file(path: Path, gens: list[Generation], gen_path: Path, load_qrels,
 
     One function because `judge.py` must refuse exactly the files `--check`
     refuses: a second copy of this sequence is a second thing to drift.
-    Without `annotator` / `guide_version` they are read from the rows, which
-    must then agree with each other (`sheet_header`). The assignment of a
-    spreadsheet file is looked up beside the file.
+    An `annotator` or `guide_version` that is not given is read from the rows,
+    which must then agree with each other (`sheet_header`); one that IS given
+    is always checked against the file. The assignment of a spreadsheet file is
+    looked up beside the file.
     """
     from . import sheets          # imports this module; deferred to avoid a cycle
 
     rows = load_labels(path, gens)      # anchor check: the batch was not regenerated
     if annotator is None or guide_version is None:
-        annotator, guide_version = sheet_header(rows)
+        in_file = sheet_header(rows)
+        annotator = in_file[0] if annotator is None else annotator
+        guide_version = in_file[1] if guide_version is None else guide_version
     check_header(rows, annotator, guide_version)
     if sheets.is_sheet_file(path):
         assignment = sheets.read_assignment(sheets.assignment_path(path.parent, gen_path))

@@ -79,12 +79,13 @@ from .cache import CACHE_DIR, generation_cache_path, judgement_cache_path
 from .data import load_beir
 from .fixture import (NOT_APPLICABLE, load_generations, load_labels,
                       sheet_path)
-from .generate import (GENERATOR, PROMPT_VERSION, Generation, cached_generations,
-                       excluded_ids, ollama_generate)
+from .generate import (GENERATOR, PROMPT_VERSION, Generation, excluded_ids,
+                       ollama_generate)
 from .observability import op
 from .retrieve import BI_ENCODER, MODEL_HELP
 from .stats import wilson_ci
-from .twopass import check_file, expected_ids, read_rows, sheet_header
+from .twopass import (batch_name, check_file, expected_ids, read_rows, sheet_batch,
+                      sheet_header)
 
 log = logging.getLogger("retrieval_lab")
 
@@ -141,10 +142,15 @@ KAPPA_TIE_BAND = 0.2
 
 # A safety net on the judge's reply, not a budget. The longest of the 60
 # rulings cached before the cap existed is 730 characters, roughly 200 tokens,
-# so this is about ten times the longest real reply: it never cuts a ruling,
-# and it ends a reply that repeats itself in a minute or two instead of letting
-# it run into the transport timeout, which raises and loses the whole batch.
-JUDGE_MAX_TOKENS = 2048
+# so this is about five times the longest real reply and never cuts a ruling.
+#
+# It has to end a reply that repeats itself BEFORE `judge_one`'s 600 s
+# transport timeout, which raises and loses the whole batch. Measured on
+# `mistral-small` with a real ten-passage prompt (2026-11-11): about 37 s to
+# read the prompt, then about 7.5 tokens a second. So 1024 tokens ends a
+# runaway reply after roughly 180 s. 2048 would take roughly 320 s, too close
+# to the timeout for a slower model or a longer prompt.
+JUDGE_MAX_TOKENS = 1024
 
 # Which axis applies to which row, mirroring fixture.INAPPLICABLE_AXIS. A refusal
 # makes no claims to ground; an answer cannot be an over-refusal. The judge is
@@ -861,7 +867,10 @@ def report(scored: dict) -> None:
         log.info("%-18s %8.3f %6d %7.1f%% %9.2fs  %-12s", judge, s["kappa"],
                  s["n"], 100 * s["miss_rate"], s["sec_per_call"], s["digest"])
 
-    log.info("\ndescriptive only — 2 minority rows cannot certify (2026-08-26):")
+    log.info("\ndescriptive only — 2 minority rows cannot certify (2026-08-26).")
+    if RUBRIC_VERSION != "v2":
+        log.info("AND NOT LIKE FOR LIKE: the fixture's refusal_ok rows were labelled "
+                 "under rubric v2, and the judge ruled under %s:", RUBRIC_VERSION)
     for judge, s in scored.items():
         log.info("  %-18s refusal_ok kappa %6.3f over n=%d",
                  judge, s["kappa_refusal"], s["n_refusal"])
@@ -873,8 +882,6 @@ def report(scored: dict) -> None:
 
 
 # ───────────── two-pass sheets: the judge against pass B (issue #15) ─────────────
-
-TWOPASS_PREFIX = "twopass__"
 
 # A two-pass run's rulings get their own cache file. The bake-off's file for
 # the same batch holds EVERY row on both axes; this one holds refused rows
@@ -888,21 +895,37 @@ def sheet_generation_path(path: Path, annotator: str) -> Path:
 
     `twopass.twopass_path` names a sheet `twopass__<batch>__<annotator>.jsonl`,
     and `<batch>` is the generation cache file's own name, so the sheet says
-    which batch it belongs to without any batch flag. The name is only a
-    pointer: `load_labels` then checks every row's `raw_sha` against that
-    batch, so a renamed file cannot pair labels with other generations.
-
-    The annotator comes from the rows, not from splitting the name on `__` —
-    an annotator name may itself contain `__`.
+    which batch it belongs to without any batch flag (`twopass.sheet_batch`).
+    The name is only a pointer: `load_labels` then checks every row's `raw_sha`
+    against that batch, so a renamed file cannot pair labels with other
+    generations.
     """
-    suffix = f"__{annotator}.jsonl"
-    name = path.name
-    if not (name.startswith(TWOPASS_PREFIX) and name.endswith(suffix)):
-        raise ValueError(
-            f"{name}: expected {TWOPASS_PREFIX}<batch>{suffix}, the name "
-            "`twopass.py` gives this annotator's sheet"
+    return CACHE_DIR / f"gen__{sheet_batch(path, annotator)}.json"
+
+
+def locate_sheet(path: Path, dataset: str) -> dict:
+    """Whose sheet this is and which batch it points at — the cheap checks.
+
+    Kept apart from `open_sheet` so a mistyped path, a file that is not a
+    two-pass sheet, or a sheet from another dataset stops the run before the
+    corpus is loaded.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"no sheet at {path}")
+    try:
+        annotator, guide_version = sheet_header(read_rows(path))
+    except (AssertionError, json.JSONDecodeError) as e:
+        raise ValueError(f"{path.name} is not a two-pass sheet: {e}") from e
+    gen_path = sheet_generation_path(path, annotator)
+    if not gen_path.name.startswith(f"gen__{dataset}__"):
+        raise ValueError(f"{path.name} is not a {dataset} batch — pass its --dataset")
+    if not gen_path.exists():
+        raise FileNotFoundError(
+            f"no generation batch at {gen_path} for {path.name} — run from the "
+            "repo root, where cache/ holds the batch this sheet was written from"
         )
-    return CACHE_DIR / f"gen__{name[len(TWOPASS_PREFIX):-len(suffix)]}.json"
+    return {"path": path, "annotator": annotator, "guide_version": guide_version,
+            "gen_path": gen_path}
 
 
 def open_sheet(path: Path, dataset: str, load_qrels) -> dict:
@@ -912,20 +935,33 @@ def open_sheet(path: Path, dataset: str, load_qrels) -> dict:
     sheet with a pass incomplete or pass A changed after the lock never reaches
     a judge. Rulings must not exist beside a sheet still being labelled.
     """
-    annotator, _guide = sheet_header(read_rows(path))
-    gen_path = sheet_generation_path(path, annotator)
-    if not gen_path.name.startswith(f"gen__{dataset}__"):
-        raise ValueError(f"{path.name} is not a {dataset} batch — pass its --dataset")
-    if not gen_path.exists():
-        raise FileNotFoundError(
-            f"no generation batch at {gen_path} for {path.name} — run from the "
-            "repo root, where cache/ holds the batch this sheet was written from"
-        )
-    gens = cached_generations(gen_path, compute=lambda: (_ for _ in ()).throw(
-        RuntimeError("unreachable: the cache file exists")))
-    rows, _minutes = check_file(path, gens, gen_path, load_qrels)
-    return {"path": path, "annotator": annotator, "gen_path": gen_path,
-            "gens": gens, "rows": rows, **judged_set(rows, gens, load_qrels)}
+    sheet = locate_sheet(path, dataset)
+    # Read-only: this path must never be able to start a generation run.
+    gens = [Generation(**r) for r in json.loads(sheet["gen_path"].read_text())]
+    rows, _minutes = check_file(path, gens, sheet["gen_path"], load_qrels,
+                                sheet["annotator"], sheet["guide_version"])
+    return {**sheet, "gens": gens, "rows": rows, **judged_set(rows, gens, load_qrels)}
+
+
+def pooled_pairs(sheets: list[dict]) -> tuple[list[dict] | None, str]:
+    """Every sheet's pairs as one list, or None and the reason there is no pool.
+
+    Two cases are not pooled, because the pooled table would look like a
+    bigger sample than it is, or like one rule when it is two:
+      - a row that is on more than one sheet (two annotators on one batch):
+        its ONE ruling would be counted once per sheet, and the intervals
+        would be computed as if those were separate rows;
+      - sheets labelled under different guide versions.
+    """
+    seen = [(s["gen_path"].name, r["query_id"]) for s in sheets for r in s["rows"]]
+    repeated = len(seen) - len(set(seen))
+    if repeated:
+        return None, (f"{repeated} rows are on more than one sheet, and each "
+                      "has one ruling")
+    guides = sorted({s["guide_version"] for s in sheets})
+    if len(guides) > 1:
+        return None, f"the sheets were labelled under guide versions {', '.join(guides)}"
+    return [p for s in sheets for p in s["pairs"]], ""
 
 
 def judged_set(rows: list[dict], gens: list[Generation], load_qrels) -> dict:
@@ -1080,6 +1116,9 @@ def main_twopass(sheet_paths: list[str], judge: str, dataset: str,
 
     Every sheet is opened and checked BEFORE the model is looked for or any
     cache is read, so an unfinished sheet stops the run with nothing judged.
+    Each table names the guide version its sheet was labelled under, beside the
+    rubric version the judge ruled under: whether the two are the same rule is
+    the reader's check, and it cannot be made without both.
 
     Rulings are made once per batch and `--gold` filter (`judged_set`), and
     each sheet picks its rows out of them by id.
@@ -1087,6 +1126,8 @@ def main_twopass(sheet_paths: list[str], judge: str, dataset: str,
     paths = [Path(p) for p in sheet_paths]
     if len({p.resolve() for p in paths}) != len(paths):
         raise SystemExit("the same --sheet was passed twice")
+    for p in paths:
+        locate_sheet(p, dataset)        # names and batches, before the corpus loads
     corpus, _queries, qrels = load_beir(dataset)
     sheets = [open_sheet(p, dataset, lambda: qrels) for p in paths]
     for s in sheets:
@@ -1104,13 +1145,16 @@ def main_twopass(sheet_paths: list[str], judge: str, dataset: str,
 
     log.info("\n=== judge × pass B (%s, rubric %s) — over-refusal is the positive "
              "class ===", judge, RUBRIC_VERSION)
-    groups = [(f"{s['annotator']} · {s['gen_path'].stem.removeprefix('gen__')}",
-               s["pairs"]) for s in sheets]
+    for s in sheets:
+        report_twopass(f"{s['annotator']} · guide {s['guide_version']} · "
+                       f"{batch_name(s['gen_path'])}", score_twopass(s["pairs"]))
     if len(sheets) > 1:
-        groups.append((f"pooled ({len(sheets)} sheets)",
-                       [p for s in sheets for p in s["pairs"]]))
-    for title, pairs in groups:
-        report_twopass(title, score_twopass(pairs))
+        pairs, why_not = pooled_pairs(sheets)
+        if pairs is None:
+            log.info("\nno pooled table: %s", why_not)
+        else:
+            report_twopass(f"pooled ({len(sheets)} sheets · guide "
+                           f"{sheets[0]['guide_version']})", score_twopass(pairs))
 
 
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
