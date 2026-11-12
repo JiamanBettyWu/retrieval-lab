@@ -456,3 +456,26 @@ def test_another_batchs_files_do_not_count(tmp_path):
     (tmp_path / "twopass__y__betty.jsonl").write_text("{not json")
     (tmp_path / "assign__y.json").write_text("{}")
     assert twopass.batch_files(tmp_path, GEN_PATH) == []
+
+
+# ─────────────────────────── the judge's table says it is a sample ───────────────────────────
+
+def test_a_table_over_sampled_rows_says_so(tmp_path, caplog):
+    path, sp = tmp_path / "twopass__x__betty.jsonl", spec(seed=4, g2=3, g1=5, g0=2)
+    twopass.write_twopass_sheet(GENS, CORPUS, QRELS, path, "betty", "0.1", sample=sp)
+    note = judge.sample_note(twopass.read_rows(path))
+    assert "gold=0: 2, gold=1: 5, gold=2: 3" in note and "seed 4" in note
+    assert "unweighted" in note and "not the batch's refusals" in note
+
+    score = {"tp": 3, "fp": 2, "fn": 1, "tn": 4, "unparsed": 0,
+             "precision": (3, 5, None), "recall": (3, 4, None), "recall_flips": (0, 0, None)}
+    with caplog.at_level("INFO", logger="retrieval_lab"):
+        judge.report_twopass("sampled sheet", score, note)
+        judge.report_twopass("whole sheet", score)
+    assert caplog.text.count("note:") == 1 and f"note: {note}" in caplog.text
+
+
+def test_a_table_over_a_whole_sheet_carries_no_note(tmp_path):
+    path = tmp_path / "twopass__x__betty.jsonl"
+    twopass.write_twopass_sheet(GENS, CORPUS, QRELS, path, "betty", "0.1")
+    assert judge.sample_note(twopass.read_rows(path)) is None

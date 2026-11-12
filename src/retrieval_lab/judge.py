@@ -1104,10 +1104,26 @@ def _rate(triple) -> str:
     return f"{k}/{n} = {100 * k / n:.1f}%  (95% Wilson {100 * ci[0]:.1f}–{100 * ci[1]:.1f}%)"
 
 
-def report_twopass(title: str, s: dict) -> None:
+def sample_note(rows: list[dict]) -> str | None:
+    """The caveat a table over sampled rows carries, or None for a sheet that
+    holds every refusal it could. A per-stratum sample has a mix chosen by
+    hand, so a rate over it is a rate over that mix, and nothing here weights
+    it back to the batch's."""
+    sample = rows[0].get("sample")
+    if not sample:
+        return None
+    targets = ", ".join(f"gold={g}: {n}" for g, n in sorted(sample["targets"].items()))
+    return (f"a per-stratum sample (targets {targets}; seed {sample['seed']}): these counts "
+            "and rates describe the sampled rows, unweighted, not the batch's refusals")
+
+
+def report_twopass(title: str, s: dict, note: str | None = None) -> None:
     """One 2×2 and its three rates. Counts first: at these sizes a percentage
-    without its k/n reads as more precise than it is."""
+    without its k/n reads as more precise than it is. `note` is printed under
+    the title (see `sample_note`)."""
     log.info("\n%s", title)
+    if note:
+        log.info("  note: %s", note)
     log.info("  %-22s %20s %18s", "", "pass B: over-refusal", "pass B: refusal OK")
     log.info("  %-22s %20d %18d", "judge: over-refusal", s["tp"], s["fp"])
     log.info("  %-22s %20d %18d", "judge: refusal OK", s["fn"], s["tn"])
@@ -1154,14 +1170,19 @@ def main_twopass(sheet_paths: list[str], judge: str, dataset: str,
              "class ===", judge, RUBRIC_VERSION)
     for s in sheets:
         report_twopass(f"{s['annotator']} · guide {s['guide_version']} · "
-                       f"{batch_name(s['gen_path'])}", score_twopass(s["pairs"]))
+                       f"{batch_name(s['gen_path'])}", score_twopass(s["pairs"]),
+                       sample_note(s["rows"]))
     if len(sheets) > 1:
         pairs, why_not = pooled_pairs(sheets)
         if pairs is None:
             log.info("\nno pooled table: %s", why_not)
         else:
+            sampled = sum(sample_note(s["rows"]) is not None for s in sheets)
             report_twopass(f"pooled ({len(sheets)} sheets · guide "
-                           f"{sheets[0]['guide_version']})", score_twopass(pairs))
+                           f"{sheets[0]['guide_version']})", score_twopass(pairs),
+                           f"{sampled} of the {len(sheets)} sheets hold a per-stratum "
+                           "sample: these counts and rates describe the pooled rows, "
+                           "unweighted, not the batches' refusals" if sampled else None)
 
 
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
