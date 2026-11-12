@@ -65,6 +65,7 @@ is wired below.
 """
 import argparse
 from collections import Counter
+import hashlib
 import json
 import logging
 import math
@@ -886,7 +887,7 @@ def report(scored: dict) -> None:
 # A two-pass run's rulings get their own cache file. The bake-off's file for
 # the same batch holds EVERY row on both axes; this one holds refused rows
 # only, and one name for both would make each run look like a stale draw to
-# the other. `judged_set` adds the sheet's `--gold` filter to it.
+# the other. `judged_set` adds the sheet's `--gold` filter or its sample to it.
 REFUSALS_SUFFIX = "__refusals"
 
 
@@ -969,12 +970,14 @@ def judged_set(rows: list[dict], gens: list[Generation], load_qrels) -> dict:
     that names that set.
 
     The set is `twopass.expected_ids`: every refused row of the batch that was
-    not cut off, narrowed by the `--gold` filter the sheet records, if any. It
+    not cut off, narrowed by the `--gold` filter or the sample the sheet
+    records, if any. It
     depends on the batch and the filter only, never on one annotator's rows, so
     every sheet written the same way shares one set of rulings instead of each
     asking the judge again and possibly getting a different reply. A
     spreadsheet annotator's file holds part of the batch and records no filter,
-    so it reads from the whole batch's rulings.
+    so it reads from the whole batch's rulings — or, when the batch was sampled,
+    from the sample's, which its rows record.
 
     The filter is in the key because a filtered set and the full one are
     different row sets, and one name for both would make each look like a stale
@@ -983,6 +986,10 @@ def judged_set(rows: list[dict], gens: list[Generation], load_qrels) -> dict:
     ids = expected_ids(rows, gens, load_qrels)
     gold = rows[0].get("gold_kept")
     suffix = REFUSALS_SUFFIX + (f"-gold{''.join(map(str, gold))}" if gold else "")
+    sample = rows[0].get("sample")
+    if sample:      # a sampled set is its own row set, so its own name (as --gold's is)
+        tag = hashlib.sha256(json.dumps(sample, sort_keys=True).encode()).hexdigest()[:8]
+        suffix += f"-sample{tag}"
     return {"judged": [g for g in gens if g.query_id in ids], "key_suffix": suffix}
 
 
@@ -1097,10 +1104,26 @@ def _rate(triple) -> str:
     return f"{k}/{n} = {100 * k / n:.1f}%  (95% Wilson {100 * ci[0]:.1f}–{100 * ci[1]:.1f}%)"
 
 
-def report_twopass(title: str, s: dict) -> None:
+def sample_note(rows: list[dict]) -> str | None:
+    """The caveat a table over sampled rows carries, or None for a sheet that
+    holds every refusal it could. A per-stratum sample has a mix chosen by
+    hand, so a rate over it is a rate over that mix, and nothing here weights
+    it back to the batch's."""
+    sample = rows[0].get("sample")
+    if not sample:
+        return None
+    targets = ", ".join(f"gold={g}: {n}" for g, n in sorted(sample["targets"].items()))
+    return (f"a per-stratum sample (targets {targets}; seed {sample['seed']}): these counts "
+            "and rates describe the sampled rows, unweighted, not the batch's refusals")
+
+
+def report_twopass(title: str, s: dict, note: str | None = None) -> None:
     """One 2×2 and its three rates. Counts first: at these sizes a percentage
-    without its k/n reads as more precise than it is."""
+    without its k/n reads as more precise than it is. `note` is printed under
+    the title (see `sample_note`)."""
     log.info("\n%s", title)
+    if note:
+        log.info("  note: %s", note)
     log.info("  %-22s %20s %18s", "", "pass B: over-refusal", "pass B: refusal OK")
     log.info("  %-22s %20d %18d", "judge: over-refusal", s["tp"], s["fp"])
     log.info("  %-22s %20d %18d", "judge: refusal OK", s["fn"], s["tn"])
@@ -1120,7 +1143,7 @@ def main_twopass(sheet_paths: list[str], judge: str, dataset: str,
     rubric version the judge ruled under: whether the two are the same rule is
     the reader's check, and it cannot be made without both.
 
-    Rulings are made once per batch and `--gold` filter (`judged_set`), and
+    Rulings are made once per batch and `--gold` filter or sample (`judged_set`), and
     each sheet picks its rows out of them by id.
     """
     paths = [Path(p) for p in sheet_paths]
@@ -1147,14 +1170,19 @@ def main_twopass(sheet_paths: list[str], judge: str, dataset: str,
              "class ===", judge, RUBRIC_VERSION)
     for s in sheets:
         report_twopass(f"{s['annotator']} · guide {s['guide_version']} · "
-                       f"{batch_name(s['gen_path'])}", score_twopass(s["pairs"]))
+                       f"{batch_name(s['gen_path'])}", score_twopass(s["pairs"]),
+                       sample_note(s["rows"]))
     if len(sheets) > 1:
         pairs, why_not = pooled_pairs(sheets)
         if pairs is None:
             log.info("\nno pooled table: %s", why_not)
         else:
+            sampled = sum(sample_note(s["rows"]) is not None for s in sheets)
             report_twopass(f"pooled ({len(sheets)} sheets · guide "
-                           f"{sheets[0]['guide_version']})", score_twopass(pairs))
+                           f"{sheets[0]['guide_version']})", score_twopass(pairs),
+                           f"{sampled} of the {len(sheets)} sheets hold a per-stratum "
+                           "sample: these counts and rates describe the pooled rows, "
+                           "unweighted, not the batches' refusals" if sampled else None)
 
 
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,

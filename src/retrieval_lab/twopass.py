@@ -30,9 +30,11 @@ both options in the labelling guide's words, every row, and the keys are the
 words' initials rather than y/n.
 """
 import argparse
+import glob
 import hashlib
 import json
 import logging
+import random
 import re
 import shlex
 import textwrap
@@ -185,8 +187,158 @@ def keep_gold(gens: list[Generation], qrels: dict, gold) -> list[Generation]:
     return [g for g in gens if gold_in_context(qrels, g.query_id, g.doc_ids) in gold]
 
 
+# ─────────────────────────── the sample ───────────────────────────
+# A batch can hold far more refusals than anyone will label. `--sample` draws a
+# fixed number per `gold_in_context` stratum, at random, once. The draw is a
+# pure function of (the batch's rows, the targets, the seed), so every row
+# written from it carries the spec (`sample`), and `--check` and the judge
+# recompute the same rows from the batch instead of trusting a list.
+
+def sample_path(out_dir: Path, generation_path: Path) -> Path:
+    return Path(out_dir) / f"sample__{batch_name(generation_path)}.json"
+
+
+def parse_targets(pairs: list[str]) -> dict[int, int]:
+    """`["2=40", "1=60"]` → `{2: 40, 1: 60}`."""
+    targets = {}
+    for pair in pairs:
+        found = re.fullmatch(r"([012])=(\d+)", pair)
+        if not found:
+            raise ValueError(f"--sample {pair}: write GOLD=N, e.g. 2=40 1=60 0=8")
+        stratum, n = int(found.group(1)), int(found.group(2))
+        if stratum in targets:
+            raise ValueError(f"--sample names gold={stratum} twice")
+        targets[stratum] = n
+    return targets
+
+
+def sample_spec(targets: dict[int, int], seed: int, fill_from: int | None = None) -> dict:
+    """The draw's inputs, as stored on rows and in records (JSON keys are text)."""
+    return {"seed": seed, "fill_from": fill_from,
+            "targets": {str(s): targets[s] for s in sorted(targets)}}
+
+
+def draw_sample(strata: dict[str, int], spec: dict) -> dict:
+    """Draw `spec["targets"]` rows per stratum from `strata` (query id →
+    `gold_in_context`). Returns `{"query_ids", "available", "taken"}`.
+
+    Each stratum is shuffled by its own generator, seeded with (seed, stratum),
+    so one stratum's rows do not change when another's target does. A stratum
+    with fewer rows than its target is an error unless `fill_from` names the
+    stratum that makes up the difference; the fill rows continue that stratum's
+    own shuffled order. At least two strata must end up on the sheet, the same
+    rule as `--gold`: a one-stratum sheet shows every row's stratum.
+    """
+    targets = {int(s): n for s, n in spec["targets"].items()}
+    fill_from, seed = spec.get("fill_from"), spec["seed"]
+    if fill_from is not None and fill_from not in targets:
+        targets[fill_from] = 0
+    order, available = {}, {}
+    for s in sorted(targets):
+        group = sorted(q for q, g in strata.items() if g == s)
+        random.Random(f"{seed}:{s}").shuffle(group)
+        order[s], available[s] = group, len(group)
+
+    taken = {s: min(n, available[s]) for s, n in targets.items()}
+    short = {s: n - taken[s] for s, n in targets.items() if n > taken[s]}
+    if short:
+        if fill_from is None or fill_from in short:
+            raise ValueError(
+                "too few rows to sample: " + ", ".join(
+                    f"gold={s} has {available[s]}, target {targets[s]}" for s in sorted(short))
+                + ("" if fill_from in short else " — name a stratum to fill from (--fill-from)"))
+        taken[fill_from] += sum(short.values())
+        if taken[fill_from] > available[fill_from]:
+            raise ValueError(
+                f"too few rows to sample: gold={fill_from} has {available[fill_from]}, "
+                f"but its target plus the fill is {taken[fill_from]}")
+    if sum(n > 0 for n in taken.values()) < 2:
+        raise ValueError("the sample must hold at least two strata; a one-stratum "
+                         "sheet shows every row's stratum")
+    ids = sorted(q for s in taken for q in order[s][:taken[s]])
+    return {"query_ids": ids,
+            "available": {str(s): available[s] for s in sorted(available)},
+            "taken": {str(s): taken[s] for s in sorted(taken)}}
+
+
+def write_sample(path: Path, spec: dict, drawn: dict) -> None:
+    if path.exists():
+        raise FileExistsError(
+            f"{path} already exists — the sample is fixed once drawn, since drawing "
+            "again after seeing the rows would no longer be a random draw.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({**spec, **drawn}, indent=1) + "\n")
+
+
+def read_sample(path: Path) -> dict | None:
+    """The batch's sample record, or None if no sample was drawn."""
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def record_spec(record: dict) -> dict:
+    """The draw's inputs out of a record, as rows store them."""
+    return {k: record[k] for k in ("seed", "fill_from", "targets")}
+
+
+def sampled_ids(strata: dict[str, int], spec: dict) -> set[str]:
+    """The ids a recorded spec draws from `strata` — the one place a spec is
+    turned back into rows, for sheets, assignments, `--check` and the judge.
+    A draw that worked when the sample was written and fails now means the
+    batch's rows changed, so it is reported as that, not as a bad target."""
+    try:
+        return set(draw_sample(strata, spec)["query_ids"])
+    except ValueError as e:
+        raise AssertionError(f"the batch no longer gives its recorded sample ({e}) — "
+                             "was it regenerated after the sample was drawn?")
+
+
+def verify_sample(record: dict, strata: dict[str, int], name: str) -> dict:
+    """The record's spec, after checking that drawing it again from the batch
+    gives exactly the ids the record lists. Before the first sheet there is no
+    row anchor yet, so this is what catches a batch regenerated in between."""
+    spec = record_spec(record)
+    if sorted(sampled_ids(strata, spec)) != record["query_ids"]:
+        raise AssertionError(f"{name} lists different rows than its spec draws from this "
+                             "batch now — was the batch regenerated after the sample "
+                             "was drawn?")
+    return spec
+
+
+def batch_files(out_dir: Path, generation_path: Path) -> list[str]:
+    """Names of the label files and the assignment this batch already has in
+    `out_dir`. A label file is matched through its rows' annotator, since one
+    batch's name can be the start of another's."""
+    batch, found = batch_name(generation_path), []
+    if (Path(out_dir) / f"assign__{batch}.json").exists():
+        found.append(f"assign__{batch}.json")
+    for path in sorted(Path(out_dir).glob(f"twopass__{glob.escape(batch)}__*.jsonl")):
+        # Only the first row is read. A file that is empty or unreadable still
+        # counts: its name says it is this batch's, and that is reason enough
+        # not to draw a sample over it.
+        try:
+            with path.open() as f:
+                annotator = json.loads(f.readline())["annotator"]
+            mine = sheet_batch(path, annotator) == batch
+        except (ValueError, KeyError, TypeError):
+            mine = True
+        if mine:
+            found.append(path.name)
+    return found
+
+
+def keep_sample(gens: list[Generation], qrels: dict, spec: dict | None) -> list[Generation]:
+    """The eligible rows the sample drew, in batch order; all of them when
+    `spec` is None. `gens` must already be the eligible rows."""
+    if spec is None:
+        return list(gens)
+    strata = {g.query_id: gold_in_context(qrels, g.query_id, g.doc_ids) for g in gens}
+    ids = sampled_ids(strata, spec)
+    return [g for g in gens if g.query_id in ids]
+
+
 def write_twopass_sheet(gens: list[Generation], corpus: dict, qrels: dict, path: Path,
-                        annotator: str, guide_version: str, gold=None) -> dict[str, int]:
+                        annotator: str, guide_version: str, gold=None,
+                        sample: dict | None = None) -> dict[str, int]:
     """Write a fresh sheet. Never overwrites: the file holds hand labels.
 
     `gold` (e.g. {1, 2}) leaves the other strata off. The filter runs here, at
@@ -194,7 +346,14 @@ def write_twopass_sheet(gens: list[Generation], corpus: dict, qrels: dict, path:
     which rows to expect. Whoever writes the sheet knows which strata are on it;
     which of them a given row is stays hidden, which is why `gold` must name at
     least two strata — a one-stratum sheet would show every row's stratum.
+
+    `sample` (a `sample_spec`) keeps only the rows that draw takes, and is
+    recorded on every row the same way. It replaces `gold`; the two together
+    are refused.
     """
+    if gold is not None and sample is not None:
+        raise ValueError("--gold and a sample both choose the rows; this batch has a "
+                         "sample record, so --gold does not apply")
     if gold is not None and len(gold) < 2:
         raise ValueError(f"--gold {' '.join(map(str, sorted(gold)))}: name at least two "
                          "strata; a one-stratum sheet shows every row's stratum")
@@ -204,17 +363,20 @@ def write_twopass_sheet(gens: list[Generation], corpus: dict, qrels: dict, path:
             "Continue it with --label; it is never rewritten."
         )
     eligible, counts = eligible_rows(gens)
-    kept = keep_gold(eligible, qrels, gold)
-    counts["other_strata"] = len(eligible) - len(kept)
-    counts["on_sheet"] = len(kept)
     if not eligible:
         raise ValueError("this batch has no refused rows to label")
+    kept = keep_sample(keep_gold(eligible, qrels, gold), qrels, sample)
+    counts["other_strata"] = len(eligible) - len(kept)
+    counts["on_sheet"] = len(kept)
     if not kept:
         raise ValueError(f"--gold leaves none of the batch's {len(eligible)} refused rows")
     rows = [twopass_row(g, corpus, qrels, annotator, guide_version) for g in kept]
     if gold is not None:
         for r in rows:
             r["gold_kept"] = sorted(gold)
+    if sample is not None:
+        for r in rows:
+            r["sample"] = sample
     path.parent.mkdir(parents=True, exist_ok=True)
     save_rows(path, rows)
     return counts
@@ -222,16 +384,22 @@ def write_twopass_sheet(gens: list[Generation], corpus: dict, qrels: dict, path:
 
 def expected_ids(rows: list[dict], gens: list[Generation], load_qrels) -> set[str]:
     """The query ids a finished file must cover: the batch's eligible rows,
-    narrowed by the `gold_kept` filter recorded at write time, if any.
-    `load_qrels` is called only when a filter is recorded."""
+    narrowed by the `gold_kept` filter or the `sample` recorded at write time,
+    if any. `load_qrels` is called only when one of them is recorded."""
     filters = {tuple(r["gold_kept"]) if r.get("gold_kept") is not None else None
                for r in rows}
     if len(filters) > 1:
         raise AssertionError("rows in this file were written under different --gold filters")
+    samples = {json.dumps(r.get("sample"), sort_keys=True) for r in rows}
+    if len(samples) > 1:
+        raise AssertionError("rows in this file were written under different samples")
     eligible = eligible_rows(gens)[0]
     gold = filters.pop() if filters else None
     if gold is not None:
         eligible = keep_gold(eligible, load_qrels(), set(gold))
+    sample = json.loads(samples.pop()) if samples else None
+    if sample is not None:
+        eligible = keep_sample(eligible, load_qrels(), sample)
     return {g.query_id for g in eligible}
 
 
@@ -543,6 +711,18 @@ def check_file(path: Path, gens: list[Generation], gen_path: Path, load_qrels,
     check_header(rows, annotator, guide_version)
     if sheets.is_sheet_file(path):
         assignment = sheets.read_assignment(sheets.assignment_path(path.parent, gen_path))
+        # The assignment is a list of ids; the sample behind it is checked the
+        # way a terminal sheet's is: every row records the assignment's spec,
+        # and drawing that spec from the batch gives exactly the assigned rows.
+        spec = assignment.get("sample")
+        if any(r.get("sample") != spec for r in rows):
+            raise AssertionError("rows in this file do not record the sample their "
+                                 "assignment was made under")
+        if spec is not None:
+            assigned = set(assignment["shared"]).union(*assignment["own"].values())
+            if assigned != expected_ids(rows, gens, load_qrels):
+                raise AssertionError("the assignment does not cover the rows its sample "
+                                     "draws from this batch")
         return rows, sheets.check_sheet_file(path, rows, assignment, annotator)
     validate_twopass(rows, expected_ids(rows, gens, load_qrels))
     return rows, None
@@ -554,18 +734,23 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          exclude: list[str] | None = None, assign: list[str] | None = None,
          shared: str = "0", assign_seed: int = 0, export_sheet: str | None = None,
          import_sheet: Path | None = None, sittings: Path | None = None,
-         gold: list[int] | None = None) -> None:
+         gold: list[int] | None = None, sample: list[str] | None = None,
+         sample_seed: int = 0, fill_from: int | None = None) -> None:
     from . import sheets          # imports this module; deferred to avoid a cycle
 
-    actions = [label, check, bool(assign), bool(export_sheet), bool(import_sheet)]
+    actions = [label, check, bool(assign), bool(export_sheet), bool(import_sheet),
+               bool(sample)]
     if sum(actions) > 1:
-        raise SystemExit("use one of --label, --check, --assign, --export-sheet, --import-sheet")
+        raise SystemExit("use one of --label, --check, --assign, --export-sheet, "
+                         "--import-sheet, --sample")
     # A flag without its parent would otherwise fall through to the default
     # action and write a new terminal sheet.
     if sittings and not import_sheet:
         raise SystemExit("--sittings goes with --import-sheet")
     if (shared != "0" or assign_seed != 0) and not assign:
         raise SystemExit("--shared and --assign-seed go with --assign")
+    if (sample_seed != 0 or fill_from is not None) and not sample:
+        raise SystemExit("--sample-seed and --fill-from go with --sample")
     if gold and any(actions):
         raise SystemExit("--gold applies only when writing a terminal sheet: --label and "
                          "--check read it back from the file, and the spreadsheet actions "
@@ -579,10 +764,49 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
     if Path(out_dir) != LABELS_DIR:
         flags += f" --out {shlex.quote(str(out_dir))}"
 
+    spath = sample_path(out_dir, gen_path)
+    if sample:
+        # Drawn before anyone has a sheet: a sample drawn after would leave
+        # those sheets describing a different set of rows.
+        started = batch_files(out_dir, gen_path)
+        if started:
+            raise SystemExit(f"this batch already has sheets or an assignment in {out_dir} "
+                             f"({started[0]}) — the sample is drawn before either")
+        _corpus, _queries, qrels = load_beir(dataset)
+        strata = sheets.batch_strata(gens, qrels)
+        try:
+            spec = sample_spec(parse_targets(sample), sample_seed, fill_from)
+            drawn = draw_sample(strata, spec)
+        except ValueError as e:
+            raise SystemExit(str(e))
+        write_sample(spath, spec, drawn)
+        log.info("\n=== sample (seed %d) ===", sample_seed)
+        for s, n in drawn["taken"].items():
+            target = spec["targets"].get(s, 0)
+            log.info("gold=%s         : %d of %d refused rows  (target %d%s)", s, n,
+                     drawn["available"][s], target,
+                     f", +{n - target} fill" if n > target else
+                     f", {target - n} short, filled from gold={fill_from}" if n < target else "")
+        log.info("sampled        : %d of %d", len(drawn["query_ids"]), len(strata))
+        log.info("\nsample -> %s", spath)
+        log.info("Sheets and --assign for this batch in %s now use these rows only; "
+                 "another --out directory does not see this record.", out_dir)
+        return
+    record = read_sample(spath)
+    spec = record_spec(record) if record else None
+    if gold and spec:
+        raise SystemExit(f"--gold does not apply: this batch has a sample ({spath.name}), "
+                         "and the sample chooses the rows")
+
     if assign:
         _corpus, _queries, qrels = load_beir(dataset)
-        assignment = sheets.make_assignment(sheets.batch_strata(gens, qrels), assign,
-                                            shared, assign_seed)
+        strata = sheets.batch_strata(gens, qrels)
+        if record:
+            drawn = sampled_ids(strata, verify_sample(record, strata, spath.name))
+            strata = {q: g for q, g in strata.items() if q in drawn}
+        assignment = sheets.make_assignment(strata, assign, shared, assign_seed)
+        if spec:
+            assignment["sample"] = spec
         apath = sheets.assignment_path(out_dir, gen_path)
         sheets.write_assignment(apath, assignment)
         log.info("\n=== assignment (seed %d) ===", assign_seed)
@@ -656,8 +880,10 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
         return
 
     corpus, _queries, qrels = load_beir(dataset)
+    if record:
+        verify_sample(record, sheets.batch_strata(gens, qrels), spath.name)
     counts = write_twopass_sheet(gens, corpus, qrels, path, annotator, guide_version,
-                                 set(gold) if gold else None)
+                                 set(gold) if gold else None, spec)
     log.info("\n=== two-pass sheet (%s) ===", annotator)
     log.info("batch rows     : %d", counts["batch"])
     log.info("refused        : %d", counts["refused"])
@@ -668,6 +894,9 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
     if gold:
         log.info("other strata   : %d  (left off the sheet: --gold %s)",
                  counts["other_strata"], " ".join(map(str, sorted(gold))))
+    if spec:
+        log.info("not sampled    : %d  (left off the sheet: %s)",
+                 counts["other_strata"], spath.name)
     log.info("on the sheet   : %d", counts["on_sheet"])
     log.info("\nsheet -> %s", path)
     log.info("Label it: python -m retrieval_lab.twopass %s --label", flags)
@@ -684,10 +913,10 @@ if __name__ == "__main__":
                         "exclude__…json record; repeatable")
     p.add_argument("--n-context", type=int, default=10)
     p.add_argument("--top-k", type=int, default=100)
-    p.add_argument("--annotator", help="one file per annotator (required except with --assign)")
+    p.add_argument("--annotator", help="one file per annotator (required except with --assign and --sample)")
     p.add_argument("--guide-version",
                    help="the labelling guide's version; recorded on every row "
-                        "(required except with --assign)")
+                        "(required except with --assign and --sample)")
     p.add_argument("--out", type=Path, default=LABELS_DIR,
                    help=f"directory for the sheet (default {LABELS_DIR})")
     p.add_argument("--label", action="store_true",
@@ -710,8 +939,17 @@ if __name__ == "__main__":
     p.add_argument("--gold", type=int, nargs="+", choices=[0, 1, 2], metavar="N",
                    help="when writing a terminal sheet: keep only refusals with this many "
                         "gold passages in context (e.g. --gold 1 2); recorded in the file")
+    p.add_argument("--sample", nargs="+", metavar="GOLD=N",
+                   help="draw N refused rows per gold stratum at random, once "
+                        "(e.g. --sample 2=40 1=60 0=8); every later sheet and --assign "
+                        "of the batch then uses those rows only")
+    p.add_argument("--sample-seed", type=int, default=0, help="with --sample: the draw's seed")
+    p.add_argument("--fill-from", type=int, choices=[0, 1, 2], metavar="GOLD",
+                   help="with --sample: the stratum that makes up the difference when "
+                        "another has fewer rows than its target")
     args = p.parse_args()
     main(args.dataset, args.n_queries, args.n_context, args.top_k, args.seed,
          args.annotator, args.guide_version, args.out, args.label, args.check,
          args.model, args.generator, args.exclude, args.assign, args.shared,
-         args.assign_seed, args.export_sheet, args.import_sheet, args.sittings, args.gold)
+         args.assign_seed, args.export_sheet, args.import_sheet, args.sittings, args.gold,
+         args.sample, args.sample_seed, args.fill_from)

@@ -235,11 +235,14 @@ def write_sheet(rows: list[dict], which: str, seed: int, annotator: str,
 
 
 def new_sheet_rows(gens: list[Generation], corpus: dict, qrels: dict, ids: set[str],
-                   annotator: str, guide_version: str) -> list[dict]:
+                   annotator: str, guide_version: str, sample: dict | None = None) -> list[dict]:
+    """`sample` is the spec the assignment was made under, if the batch was
+    sampled; each row records it, as a terminal sheet's rows do."""
     kept = [g for g in eligible_rows(gens)[0] if g.query_id in ids]
     if {g.query_id for g in kept} != ids:
         raise AssertionError("the assignment names rows this batch does not have to label")
-    return [{**twopass_row(g, corpus, qrels, annotator, guide_version), "timing": TIMING}
+    extra = {"timing": TIMING} if sample is None else {"timing": TIMING, "sample": sample}
+    return [{**twopass_row(g, corpus, qrels, annotator, guide_version), **extra}
             for g in kept]
 
 
@@ -265,7 +268,7 @@ def export_sheet(which: str, jsonl_path: Path, assignment: dict, annotator: str,
             raise FileNotFoundError(f"no label file at {jsonl_path} — export pass A first")
         jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         save_rows(jsonl_path, new_sheet_rows(gens, corpus, qrels, ids, annotator,
-                                             guide_version))
+                                             guide_version, assignment.get("sample")))
     rows = load_sheet_rows(jsonl_path, annotator, guide_version, ids)
 
     if which == "B":
