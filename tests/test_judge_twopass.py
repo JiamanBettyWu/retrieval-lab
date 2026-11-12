@@ -373,3 +373,21 @@ def test_unparsed_rulings_are_counted():
     the decision `score_twopass` records, so no test here assumes it."""
     s = judge.score_twopass(WORKED + [pair(True, None), pair(False, None)])
     assert s["unparsed"] == 2
+
+
+# ─────────────────────────── the printed table ───────────────────────────
+# Fed a hand-built score, because the stub raises before `report_twopass` is
+# reached: without this, its first run would be on real rulings.
+
+def test_the_table_prints_counts_and_intervals(caplog):
+    score = {"tp": 3, "fp": 2, "fn": 1, "tn": 4, "unparsed": 1,
+             "precision": (3, 5, wilson_ci(3, 5)), "recall": (3, 4, wilson_ci(3, 4)),
+             "recall_flips": (0, 0, None)}
+    with caplog.at_level("INFO", logger="retrieval_lab"):
+        judge.report_twopass("toy sheet", score)
+    out = caplog.text
+    assert "toy sheet" in out
+    assert "3/5 = 60.0%" in out and "95% Wilson" in out
+    assert "3/4 = 75.0%" in out
+    assert "0/0" in out and "0/0 =" not in out      # an empty rate has no percentage
+    assert "unparsed rulings: 1" in out
