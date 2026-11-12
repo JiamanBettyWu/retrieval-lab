@@ -887,7 +887,7 @@ def report(scored: dict) -> None:
 # A two-pass run's rulings get their own cache file. The bake-off's file for
 # the same batch holds EVERY row on both axes; this one holds refused rows
 # only, and one name for both would make each run look like a stale draw to
-# the other. `judged_set` adds the sheet's `--gold` filter to it.
+# the other. `judged_set` adds the sheet's `--gold` filter or its sample to it.
 REFUSALS_SUFFIX = "__refusals"
 
 
@@ -1127,7 +1127,7 @@ def main_twopass(sheet_paths: list[str], judge: str, dataset: str,
     rubric version the judge ruled under: whether the two are the same rule is
     the reader's check, and it cannot be made without both.
 
-    Rulings are made once per batch and `--gold` filter (`judged_set`), and
+    Rulings are made once per batch and `--gold` filter or sample (`judged_set`), and
     each sheet picks its rows out of them by id.
     """
     paths = [Path(p) for p in sheet_paths]

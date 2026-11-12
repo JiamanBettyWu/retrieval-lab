@@ -144,8 +144,9 @@ def test_the_record_is_written_once_and_read_back_as_the_spec(tmp_path):
     path, sp = tmp_path / "sample__x.json", spec(seed=3, fill_from=1, g2=3, g1=5)
     assert twopass.read_sample(path) is None
     twopass.write_sample(path, sp, twopass.draw_sample(STRATA, sp))
-    assert twopass.read_sample(path) == sp
-    assert json.loads(path.read_text())["query_ids"] == drawn(sp)
+    record = twopass.read_sample(path)
+    assert twopass.record_spec(record) == sp and record["query_ids"] == drawn(sp)
+    assert twopass.verify_sample(record, STRATA, path.name) == sp
     with pytest.raises(FileExistsError, match="fixed once drawn"):
         twopass.write_sample(path, sp, twopass.draw_sample(STRATA, sp))
 
@@ -254,7 +255,7 @@ def test_the_sample_is_drawn_once_and_every_later_sheet_uses_it(cli):
     run, out = cli
     run(sample=["2=3", "1=5", "0=2"], sample_seed=4)
     sp = spec(seed=4, g2=3, g1=5, g0=2)
-    assert twopass.read_sample(out / "sample__x.json") == sp
+    assert twopass.record_spec(twopass.read_sample(out / "sample__x.json")) == sp
 
     run(annotator="betty")
     assert [r["query_id"] for r in twopass.read_rows(out / "twopass__x__betty.jsonl")] == drawn(sp)
@@ -325,7 +326,7 @@ def test_a_sampled_terminal_sheet_passes_the_check_once_labelled(tmp_path):
 
     rows.pop()                                               # a sampled row gone missing
     twopass.save_rows(path, rows)
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match="file covers 9 rows, the batch has 10"):
         twopass.check_file(path, GENS, GEN_PATH, lambda: QRELS)
 
 
@@ -369,3 +370,89 @@ def test_a_sampled_spreadsheet_file_passes_the_check_once_imported(tmp_path):
     # the judge still reads the whole sample, not just this annotator's part of it
     judged = judge.judged_set(rows, GENS, lambda: QRELS)["judged"]
     assert [g.query_id for g in judged] == drawn(sp)
+
+
+def finished_spreadsheet_file(tmp_path, sp):
+    assignment = sampled_assignment(sp)
+    sheets.write_assignment(sheets.assignment_path(tmp_path, GEN_PATH), assignment)
+    jsonl = tmp_path / "twopass__x__v1.jsonl"
+    a_csv, _t, _r = sheets.export_sheet("A", jsonl, assignment, "v1", "0.1", GENS, CORPUS, QRELS)
+    sheets.import_sheet("A", jsonl, fill(a_csv, {sheets.COL_A: "accept",
+                                                 sheets.COL_CONFIDENCE: "confident"}),
+                        sittings(tmp_path / "sa.csv", "14:00", "14:30"), assignment, "v1", "0.1")
+    b_csv, _t, _r = sheets.export_sheet("B", jsonl, assignment, "v1", "0.1")
+    sheets.import_sheet("B", jsonl, fill(b_csv, {sheets.COL_B: "refusal OK",
+                                                 sheets.COL_COMMON: ""}),
+                        sittings(tmp_path / "sb.csv", "20:00", "21:15"), assignment, "v1", "0.1")
+    return jsonl, assignment
+
+
+def test_a_spreadsheet_file_whose_rows_lost_the_sample_fails_the_check(tmp_path):
+    jsonl, _assignment = finished_spreadsheet_file(tmp_path, spec(g2=3, g1=5, g0=2))
+    rows = twopass.read_rows(jsonl)
+    for r in rows:
+        del r["sample"]
+    twopass.save_rows(jsonl, rows)
+    with pytest.raises(AssertionError, match="do not record the sample"):
+        twopass.check_file(jsonl, GENS, GEN_PATH, lambda: QRELS)
+
+
+def test_an_assignment_that_is_not_its_samples_rows_fails_the_check(tmp_path):
+    jsonl, assignment = finished_spreadsheet_file(tmp_path, spec(g2=3, g1=5, g0=2))
+    other = spec(seed=9, g2=3, g1=5, g0=2)          # same sizes, different rows
+    assert set(drawn(other)) != set(drawn(assignment["sample"]))
+    rows = twopass.read_rows(jsonl)
+    for r in rows:
+        r["sample"] = other
+    twopass.save_rows(jsonl, rows)
+    apath = sheets.assignment_path(tmp_path, GEN_PATH)
+    apath.write_text(json.dumps({**assignment, "sample": other}))
+    with pytest.raises(AssertionError, match="does not cover the rows its sample draws"):
+        twopass.check_file(jsonl, GENS, GEN_PATH, lambda: QRELS)
+
+
+# ─────────────────────────── a batch that changed under its sample ───────────────────────────
+
+def test_a_record_that_no_longer_matches_the_batch_is_refused(cli):
+    run, out = cli
+    run(sample=["2=3", "1=5", "0=2"])
+    path = out / "sample__x.json"
+    record = json.loads(path.read_text())
+    record["query_ids"] = sorted(set(QIDS) - set(record["query_ids"]))[:10]
+    path.write_text(json.dumps(record))
+    with pytest.raises(AssertionError, match="lists different rows than its spec draws"):
+        run(annotator="betty")
+    with pytest.raises(AssertionError, match="lists different rows than its spec draws"):
+        run(assign=["v1", "v2"])
+    assert not list(out.glob("twopass__*")) and not list(out.glob("assign__*"))
+
+
+def test_a_spec_the_batch_can_no_longer_fill_says_the_batch_changed():
+    fewer = {q: g for q, g in STRATA.items() if not (g == 2 and q > "q01")}
+    with pytest.raises(AssertionError, match="no longer gives its recorded sample"):
+        twopass.sampled_ids(fewer, spec(g2=3, g1=5))
+
+
+def test_a_batch_with_no_refusals_says_so_before_any_draw(tmp_path):
+    answered = [gen("q00", refused=False)]
+    with pytest.raises(ValueError, match="no refused rows"):
+        twopass.write_twopass_sheet(answered, CORPUS, QRELS, tmp_path / "t.jsonl", "betty",
+                                    "0.1", sample=spec(g2=3, g1=5))
+
+
+# ─────────────────────────── what counts as already started ───────────────────────────
+
+def test_an_empty_or_unreadable_label_file_still_counts_as_started(tmp_path):
+    (tmp_path / "twopass__x__v1.jsonl").write_text("")
+    (tmp_path / "twopass__x__v2.jsonl").write_text("{not json")
+    assert twopass.batch_files(tmp_path, GEN_PATH) == ["twopass__x__v1.jsonl",
+                                                       "twopass__x__v2.jsonl"]
+
+
+def test_another_batchs_files_do_not_count(tmp_path):
+    # batch "x__ex1" starts with "x"; its file is told apart by the row's annotator
+    twopass.write_twopass_sheet(GENS, CORPUS, QRELS, tmp_path / "twopass__x__ex1__betty.jsonl",
+                                "betty", "0.1")
+    (tmp_path / "twopass__y__betty.jsonl").write_text("{not json")
+    (tmp_path / "assign__y.json").write_text("{}")
+    assert twopass.batch_files(tmp_path, GEN_PATH) == []

@@ -30,6 +30,7 @@ both options in the labelling guide's words, every row, and the keys are the
 words' initials rather than y/n.
 """
 import argparse
+import glob
 import hashlib
 import json
 import logging
@@ -270,12 +271,37 @@ def write_sample(path: Path, spec: dict, drawn: dict) -> None:
 
 
 def read_sample(path: Path) -> dict | None:
-    """The batch's sample spec (`seed`, `fill_from`, `targets`), or None if no
-    sample was drawn."""
-    if not path.exists():
-        return None
-    record = json.loads(path.read_text())
+    """The batch's sample record, or None if no sample was drawn."""
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def record_spec(record: dict) -> dict:
+    """The draw's inputs out of a record, as rows store them."""
     return {k: record[k] for k in ("seed", "fill_from", "targets")}
+
+
+def sampled_ids(strata: dict[str, int], spec: dict) -> set[str]:
+    """The ids a recorded spec draws from `strata` — the one place a spec is
+    turned back into rows, for sheets, assignments, `--check` and the judge.
+    A draw that worked when the sample was written and fails now means the
+    batch's rows changed, so it is reported as that, not as a bad target."""
+    try:
+        return set(draw_sample(strata, spec)["query_ids"])
+    except ValueError as e:
+        raise AssertionError(f"the batch no longer gives its recorded sample ({e}) — "
+                             "was it regenerated after the sample was drawn?")
+
+
+def verify_sample(record: dict, strata: dict[str, int], name: str) -> dict:
+    """The record's spec, after checking that drawing it again from the batch
+    gives exactly the ids the record lists. Before the first sheet there is no
+    row anchor yet, so this is what catches a batch regenerated in between."""
+    spec = record_spec(record)
+    if sorted(sampled_ids(strata, spec)) != record["query_ids"]:
+        raise AssertionError(f"{name} lists different rows than its spec draws from this "
+                             "batch now — was the batch regenerated after the sample "
+                             "was drawn?")
+    return spec
 
 
 def batch_files(out_dir: Path, generation_path: Path) -> list[str]:
@@ -285,9 +311,17 @@ def batch_files(out_dir: Path, generation_path: Path) -> list[str]:
     batch, found = batch_name(generation_path), []
     if (Path(out_dir) / f"assign__{batch}.json").exists():
         found.append(f"assign__{batch}.json")
-    for path in sorted(Path(out_dir).glob("twopass__*.jsonl")):
-        rows = read_rows(path)
-        if rows and path.name == f"twopass__{batch}__{rows[0].get('annotator')}.jsonl":
+    for path in sorted(Path(out_dir).glob(f"twopass__{glob.escape(batch)}__*.jsonl")):
+        # Only the first row is read. A file that is empty or unreadable still
+        # counts: its name says it is this batch's, and that is reason enough
+        # not to draw a sample over it.
+        try:
+            with path.open() as f:
+                annotator = json.loads(f.readline())["annotator"]
+            mine = sheet_batch(path, annotator) == batch
+        except (ValueError, KeyError, TypeError):
+            mine = True
+        if mine:
             found.append(path.name)
     return found
 
@@ -298,7 +332,7 @@ def keep_sample(gens: list[Generation], qrels: dict, spec: dict | None) -> list[
     if spec is None:
         return list(gens)
     strata = {g.query_id: gold_in_context(qrels, g.query_id, g.doc_ids) for g in gens}
-    ids = set(draw_sample(strata, spec)["query_ids"])
+    ids = sampled_ids(strata, spec)
     return [g for g in gens if g.query_id in ids]
 
 
@@ -329,11 +363,11 @@ def write_twopass_sheet(gens: list[Generation], corpus: dict, qrels: dict, path:
             "Continue it with --label; it is never rewritten."
         )
     eligible, counts = eligible_rows(gens)
+    if not eligible:
+        raise ValueError("this batch has no refused rows to label")
     kept = keep_sample(keep_gold(eligible, qrels, gold), qrels, sample)
     counts["other_strata"] = len(eligible) - len(kept)
     counts["on_sheet"] = len(kept)
-    if not eligible:
-        raise ValueError("this batch has no refused rows to label")
     if not kept:
         raise ValueError(f"--gold leaves none of the batch's {len(eligible)} refused rows")
     rows = [twopass_row(g, corpus, qrels, annotator, guide_version) for g in kept]
@@ -677,6 +711,18 @@ def check_file(path: Path, gens: list[Generation], gen_path: Path, load_qrels,
     check_header(rows, annotator, guide_version)
     if sheets.is_sheet_file(path):
         assignment = sheets.read_assignment(sheets.assignment_path(path.parent, gen_path))
+        # The assignment is a list of ids; the sample behind it is checked the
+        # way a terminal sheet's is: every row records the assignment's spec,
+        # and drawing that spec from the batch gives exactly the assigned rows.
+        spec = assignment.get("sample")
+        if any(r.get("sample") != spec for r in rows):
+            raise AssertionError("rows in this file do not record the sample their "
+                                 "assignment was made under")
+        if spec is not None:
+            assigned = set(assignment["shared"]).union(*assignment["own"].values())
+            if assigned != expected_ids(rows, gens, load_qrels):
+                raise AssertionError("the assignment does not cover the rows its sample "
+                                     "draws from this batch")
         return rows, sheets.check_sheet_file(path, rows, assignment, annotator)
     validate_twopass(rows, expected_ids(rows, gens, load_qrels))
     return rows, None
@@ -743,9 +789,11 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
                      f", {target - n} short, filled from gold={fill_from}" if n < target else "")
         log.info("sampled        : %d of %d", len(drawn["query_ids"]), len(strata))
         log.info("\nsample -> %s", spath)
-        log.info("Sheets and --assign for this batch now use these rows only.")
+        log.info("Sheets and --assign for this batch in %s now use these rows only; "
+                 "another --out directory does not see this record.", out_dir)
         return
-    spec = read_sample(spath)
+    record = read_sample(spath)
+    spec = record_spec(record) if record else None
     if gold and spec:
         raise SystemExit(f"--gold does not apply: this batch has a sample ({spath.name}), "
                          "and the sample chooses the rows")
@@ -753,8 +801,8 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
     if assign:
         _corpus, _queries, qrels = load_beir(dataset)
         strata = sheets.batch_strata(gens, qrels)
-        if spec:
-            drawn = set(draw_sample(strata, spec)["query_ids"])
+        if record:
+            drawn = sampled_ids(strata, verify_sample(record, strata, spath.name))
             strata = {q: g for q, g in strata.items() if q in drawn}
         assignment = sheets.make_assignment(strata, assign, shared, assign_seed)
         if spec:
@@ -832,6 +880,8 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
         return
 
     corpus, _queries, qrels = load_beir(dataset)
+    if record:
+        verify_sample(record, sheets.batch_strata(gens, qrels), spath.name)
     counts = write_twopass_sheet(gens, corpus, qrels, path, annotator, guide_version,
                                  set(gold) if gold else None, spec)
     log.info("\n=== two-pass sheet (%s) ===", annotator)
@@ -866,7 +916,7 @@ if __name__ == "__main__":
     p.add_argument("--annotator", help="one file per annotator (required except with --assign and --sample)")
     p.add_argument("--guide-version",
                    help="the labelling guide's version; recorded on every row "
-                        "(required except with --assign)")
+                        "(required except with --assign and --sample)")
     p.add_argument("--out", type=Path, default=LABELS_DIR,
                    help=f"directory for the sheet (default {LABELS_DIR})")
     p.add_argument("--label", action="store_true",
