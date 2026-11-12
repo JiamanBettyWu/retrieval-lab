@@ -30,6 +30,7 @@ python -m retrieval_lab.fixture --n-queries 30 --seed 1 --check   # ... verify t
 python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator NAME --guide-version V           # two-pass refusal sheet (--out DIR to write elsewhere)
 python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator NAME --guide-version V --label   # ... pass A over every row, then pass B (resumable)
 python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator NAME --guide-version V --check   # ... verify both passes
+python -m retrieval_lab.twopass --n-queries 30 --seed 2 --sample 2=4 1=6 0=2 --fill-from 1      # a large batch: draw N refusals per gold stratum (written once, before any sheet or --assign; both then use those rows only)
 python -m retrieval_lab.twopass --n-queries 30 --seed 2 --assign V1 V2 --shared all            # spreadsheet annotators: split the rows (written once)
 python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator V1 --guide-version V --export-sheet pass-a   # ... their pass A CSV (no passages)
 python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator V1 --guide-version V --import-sheet F.csv --sittings S.csv   # ... read it back; then pass-b the same way

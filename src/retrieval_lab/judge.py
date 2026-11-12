@@ -65,6 +65,7 @@ is wired below.
 """
 import argparse
 from collections import Counter
+import hashlib
 import json
 import logging
 import math
@@ -969,12 +970,14 @@ def judged_set(rows: list[dict], gens: list[Generation], load_qrels) -> dict:
     that names that set.
 
     The set is `twopass.expected_ids`: every refused row of the batch that was
-    not cut off, narrowed by the `--gold` filter the sheet records, if any. It
+    not cut off, narrowed by the `--gold` filter or the sample the sheet
+    records, if any. It
     depends on the batch and the filter only, never on one annotator's rows, so
     every sheet written the same way shares one set of rulings instead of each
     asking the judge again and possibly getting a different reply. A
     spreadsheet annotator's file holds part of the batch and records no filter,
-    so it reads from the whole batch's rulings.
+    so it reads from the whole batch's rulings — or, when the batch was sampled,
+    from the sample's, which its rows record.
 
     The filter is in the key because a filtered set and the full one are
     different row sets, and one name for both would make each look like a stale
@@ -983,6 +986,10 @@ def judged_set(rows: list[dict], gens: list[Generation], load_qrels) -> dict:
     ids = expected_ids(rows, gens, load_qrels)
     gold = rows[0].get("gold_kept")
     suffix = REFUSALS_SUFFIX + (f"-gold{''.join(map(str, gold))}" if gold else "")
+    sample = rows[0].get("sample")
+    if sample:      # a sampled set is its own row set, so its own name (as --gold's is)
+        tag = hashlib.sha256(json.dumps(sample, sort_keys=True).encode()).hexdigest()[:8]
+        suffix += f"-sample{tag}"
     return {"judged": [g for g in gens if g.query_id in ids], "key_suffix": suffix}
 
 
