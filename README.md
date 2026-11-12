@@ -571,7 +571,8 @@ into context (`gold_in_context` ∈ {0,1,2}) is a free difficulty stratum.
 30 generations were hand-labelled on two disjoint axes (a refusal makes no
 claims, so scoring it for groundedness would award it a free point): **16
 answered rows** labelled `grounded`, **14 refused rows** labelled `refusal_ok`.
-Two local candidates were then scored against those labels.
+Two local candidates were then scored against those labels, under **judge
+rubric v2** (`RUBRIC_VERSION` in `judge.py`).
 
 | judge | κ `grounded` | n | 95% CI | raw agree | parse-miss | s/call | digest |
 |---|---|---|---|---|---|---|---|
@@ -601,6 +602,12 @@ attribute the gap to size; that would need two sizes inside one family
 (`gemma3:4b` vs `gemma3:27b`), which was not run. The ranking is secure at n=16;
 the value of κ is not — `[+0.09, +1.00]` clears zero and little else.
 
+**Every number in this section is a rubric v2 number.** Rubric v3 rewrote the
+`refusal_ok` rule and left the `grounded` rule as it was. The 14 refused rows
+were hand-labelled under the v2 rule, so the bake-off was not re-run under v3:
+a v3 κ against v2 labels would mix "the judge is wrong" with "the two rules
+differ".
+
 Decision and reasoning:
 [#2](https://github.com/JiamanBettyWu/retrieval-lab/issues/2).
 
@@ -629,8 +636,8 @@ retrieval configs.
 **Two caveats that belong next to any number from this axis.** First, the
 over-refusal count is a **lower bound**: `refusal_ok` scores a refusal against
 what the passages establish, and the axis has only 2 minority rows, so its κ
-(`mistral-small` 0.632, `gemma3:4b` −0.105, n=14) is reported as **descriptive
-only** — 36% and 43% of bootstrap resamples respectively contain no minority row
+(`mistral-small` 0.632, `gemma3:4b` −0.105, n=14, rubric v2) is reported as
+**descriptive only** — 36% and 43% of bootstrap resamples respectively contain no minority row
 at all. Second, refusals have at least two mechanisms — missing context, and
 *misreading present context* — and this curve cannot separate them. A row where
 both gold passages were present, the rationale names the answer, and the model

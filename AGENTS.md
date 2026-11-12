@@ -35,7 +35,9 @@ python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator V1 --guide-v
 python -m retrieval_lab.twopass --n-queries 30 --seed 2 --annotator V1 --guide-version V --import-sheet F.csv --sittings S.csv   # ... read it back; then pass-b the same way
 
 python -m retrieval_lab.judge --smoke                             # Phase 4c.2: can the candidates follow the format? (live, writes nothing)
+python -m retrieval_lab.judge --smoke 4 --axis refusal_ok         # ... on one axis only: a plain --smoke takes the first rows, which can all be `grounded`
 python -m retrieval_lab.judge --bakeoff                           # ... score every candidate against the labelled fixture
+python -m retrieval_lab.judge --judge mistral-small --sheet data/labels/twopass__<batch>__NAME.jsonl   # judge a finished two-pass sheet's refusals and score them against pass B; --sheet repeats (per sheet + pooled). No batch flags: the sheet's name says which batch. Refuses a sheet that fails `twopass --check`
 
 python -m retrieval_lab.finetune --smoke                          # Phase 2: throughput + path check
 python -m retrieval_lab.finetune --tag r16-a32-lr2e5-100k --triples 100000 --k 10000
@@ -95,6 +97,8 @@ NFCorpus queries are terse topic strings rather than answerable questions. Phase
 `evaluate.py`, `oracle.py` and `rerank.py` are the Phase 0-2 entrypoints;
 `hotpot_pool.py`, `generate.py`, `fixture.py`, `twopass.py` (with `sheets.py`) and `judge.py` are
 Phase 4's.
+`stats.py` holds the interval for every reported proportion (`wilson_ci`); it
+imports no data, model or cache code, so analysis scripts can use it alone.
 `observability.py` shims Weave's `@op` so every phase runs with weave absent or
 uninitialized.
 

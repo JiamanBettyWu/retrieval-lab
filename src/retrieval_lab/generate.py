@@ -261,11 +261,6 @@ def ollama_generate(prompt: str, model: str = GENERATOR, timeout: int = 600,
         ) from e
 
 
-def call_ollama(prompt: str, model: str = GENERATOR, timeout: int = 600) -> str:
-    """The reply text of one uncapped generation — what `judge.py` calls."""
-    return ollama_generate(prompt, model=model, timeout=timeout)["response"]
-
-
 def eligible_queries(results: dict, qrels: dict) -> list[str]:
     """The pool a sample is drawn from, sorted.
 
