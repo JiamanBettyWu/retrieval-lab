@@ -4,6 +4,8 @@
     python -m retrieval_lab.judge --smoke 4 --axis refusal_ok  # ... on one axis's rule only
     python -m retrieval_lab.judge --bakeoff                    # every candidate
     python -m retrieval_lab.judge --bakeoff --judge gemma3:4b  # just one
+    python -m retrieval_lab.judge --judge mistral-small --sheet data/labels/twopass__<batch>__<annotator>.jsonl
+                                                               # judge a finished two-pass sheet's refusals
 
 This module scores JUDGES, not generations. It reads a labelled fixture sheet,
 asks each candidate model to rule on the same rows Betty ruled on, and reports
@@ -55,6 +57,8 @@ The four functions that decide what this module MEANS are Betty's:
     cohen_kappa()         the agreement statistic the README will publish
     rank_candidates()     what "separates grounded from ungrounded" means as a
                           number, which is the actual bake-off decision
+A fifth, for the `--sheet` path, is also Betty's and still a stub:
+    score_twopass()       the judge against pass B: the 2×2, precision, recall
 Everything else — transport, timing, caching, digests, validation, the table —
 is wired below.
 ────────────────────────────────────────────────────────────────────────────
@@ -69,15 +73,17 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from .cache import CACHE_DIR, generation_cache_path, judgement_cache_path
 from .data import load_beir
 from .fixture import (NOT_APPLICABLE, load_generations, load_labels,
                       sheet_path)
 from .generate import (GENERATOR, PROMPT_VERSION, Generation, call_ollama,
-                       excluded_ids)
+                       cached_generations, excluded_ids)
 from .observability import op
 from .retrieve import BI_ENCODER, MODEL_HELP
+from .twopass import check_file, expected_ids, read_rows, sheet_header
 
 log = logging.getLogger("retrieval_lab")
 
@@ -711,10 +717,13 @@ def judge_batch(judge: str, items: list[dict], generation_key: str,
     # Post-hoc, like generate's: catches a HIT written when the SHEET was
     # different (rows dropped, a relabelled draw), which validate cannot see
     # because that batch was valid when it was written.
-    if len(js) != len(items):
+    # Ids, not just the count: two different row sets of the same size would
+    # otherwise pass, and every ruling would pair with the wrong row or none.
+    if [j.query_id for j in js] != [it["query_id"] for it in items]:
         raise AssertionError(
             f"{path.name} holds {len(js)} rulings but the batch has {len(items)} "
-            "rows — it was written against a different draw. Pass --refresh."
+            "rows, or the same number for different rows — it was written "
+            "against a different draw. Pass --refresh."
         )
     return js
 
@@ -842,6 +851,227 @@ def report(scored: dict) -> None:
         log.info("  %d. %-18s %s", i, judge, reason)
 
 
+# ───────────── two-pass sheets: the judge against pass B (issue #15) ─────────────
+
+TWOPASS_PREFIX = "twopass__"
+
+# A two-pass run's rulings get their own cache file. The bake-off's file for
+# the same batch holds EVERY row on both axes; this one holds refused rows
+# only, and one name for both would make each run look like a stale draw to
+# the other. `judged_set` adds the sheet's `--gold` filter to it.
+REFUSALS_SUFFIX = "__refusals"
+
+
+def sheet_generation_path(path: Path, annotator: str) -> Path:
+    """The generation batch a two-pass sheet was written from, read off its name.
+
+    `twopass.twopass_path` names a sheet `twopass__<batch>__<annotator>.jsonl`,
+    and `<batch>` is the generation cache file's own name, so the sheet says
+    which batch it belongs to without any batch flag. The name is only a
+    pointer: `load_labels` then checks every row's `raw_sha` against that
+    batch, so a renamed file cannot pair labels with other generations.
+
+    The annotator comes from the rows, not from splitting the name on `__` —
+    an annotator name may itself contain `__`.
+    """
+    suffix = f"__{annotator}.jsonl"
+    name = path.name
+    if not (name.startswith(TWOPASS_PREFIX) and name.endswith(suffix)):
+        raise ValueError(
+            f"{name}: expected {TWOPASS_PREFIX}<batch>{suffix}, the name "
+            "`twopass.py` gives this annotator's sheet"
+        )
+    return CACHE_DIR / f"gen__{name[len(TWOPASS_PREFIX):-len(suffix)]}.json"
+
+
+def open_sheet(path: Path, dataset: str, load_qrels) -> dict:
+    """Read one two-pass sheet and its batch, refusing a sheet that is not finished.
+
+    Runs `twopass.check_file`, the same function `twopass --check` runs, so a
+    sheet with a pass incomplete or pass A changed after the lock never reaches
+    a judge. Rulings must not exist beside a sheet still being labelled.
+    """
+    annotator, _guide = sheet_header(read_rows(path))
+    gen_path = sheet_generation_path(path, annotator)
+    if not gen_path.name.startswith(f"gen__{dataset}__"):
+        raise ValueError(f"{path.name} is not a {dataset} batch — pass its --dataset")
+    if not gen_path.exists():
+        raise FileNotFoundError(
+            f"no generation batch at {gen_path} for {path.name} — run from the "
+            "repo root, where cache/ holds the batch this sheet was written from"
+        )
+    gens = cached_generations(gen_path, compute=lambda: (_ for _ in ()).throw(
+        RuntimeError("unreachable: the cache file exists")))
+    rows, _minutes = check_file(path, gens, gen_path, load_qrels)
+    return {"path": path, "annotator": annotator, "gen_path": gen_path,
+            "gens": gens, "rows": rows, **judged_set(rows, gens, load_qrels)}
+
+
+def judged_set(rows: list[dict], gens: list[Generation], load_qrels) -> dict:
+    """Which of the batch's rows a sheet's run judges, and the cache key part
+    that names that set.
+
+    The set is `twopass.expected_ids`: every refused row of the batch that was
+    not cut off, narrowed by the `--gold` filter the sheet records, if any. It
+    depends on the batch and the filter only, never on one annotator's rows, so
+    every sheet written the same way shares one set of rulings instead of each
+    asking the judge again and possibly getting a different reply. A
+    spreadsheet annotator's file holds part of the batch and records no filter,
+    so it reads from the whole batch's rulings.
+
+    The filter is in the key because a filtered set and the full one are
+    different row sets, and one name for both would make each look like a stale
+    draw to the other.
+    """
+    ids = expected_ids(rows, gens, load_qrels)
+    gold = rows[0].get("gold_kept")
+    suffix = REFUSALS_SUFFIX + (f"-gold{''.join(map(str, gold))}" if gold else "")
+    return {"judged": [g for g in gens if g.query_id in ids], "key_suffix": suffix}
+
+
+def pair_with_pass_b(rows: list[dict], js: list[Judgement]) -> list[dict]:
+    """One dict per sheet row, with the polarity already turned to "over-refusal".
+
+    The sheet and the judge both store the answer to "was this refusal OK?", so
+    on both sides **False is the over-refusal**. Over-refusal is the positive
+    class in every number this path reports, so each row is turned here, once,
+    into three named values and nothing downstream handles a raw `refusal_ok`:
+
+        over_refusal        pass B said over-refusal   (`refusal_ok_passages` is False)
+        flagged             the judge said over-refusal (verdict False);
+                            **None when its reply did not parse**
+        accepted_in_pass_a  pass A accepted the refusal (`refusal_ok_response` is True)
+
+    Unlike `align`, an unparsed ruling is NOT dropped: it comes through as
+    `flagged: None`. Dropping it here would decide, out of sight, that a row the
+    judge failed on leaves the denominator — and that choice belongs to
+    `score_twopass`. A sheet row with no ruling at all raises.
+    """
+    by_id = {j.query_id: j for j in js if j.axis == "refusal_ok"}
+    missing = [r["query_id"] for r in rows if r["query_id"] not in by_id]
+    if missing:
+        raise AssertionError(
+            f"{len(missing)} sheet rows have no ruling (e.g. {missing[:3]}) — the "
+            "rulings were made for a different set of rows. Pass --refresh."
+        )
+    pairs = []
+    for r in rows:
+        j = by_id[r["query_id"]]
+        pairs.append({
+            "over_refusal": r["refusal_ok_passages"] is False,
+            "flagged": (j.verdict is False) if j.parsed else None,
+            "accepted_in_pass_a": r["refusal_ok_response"] is True,
+        })
+    return pairs
+
+
+# ── Betty's stub ──
+def score_twopass(pairs: list[dict]) -> dict:
+    """The judge against pass B on one set of rows: the 2×2 and three rates.
+
+    CONCEPT — pass B is the reference and over-refusal is the POSITIVE class, so
+    the four cells are the usual ones with that reading:
+
+                              pass B: over-refusal   pass B: refusal OK
+        judge: over-refusal          tp                    fp
+        judge: refusal OK            fn                    tn
+
+    `precision = tp / (tp + fp)`: of the rows the judge flagged, how many pass B
+    agrees with. `recall = tp / (tp + fn)`: of pass B's over-refusals, how many
+    the judge flagged. `recall_flips` is recall again over a subset: the rows
+    where `accepted_in_pass_a` is True (pass A accepted a refusal that pass B
+    then called an over-refusal).
+
+    An invented example, 10 rows: pass B has 4 over-refusals; the judge flags 5
+    rows, 3 of them among those 4. Then tp=3, fp=2, fn=1, tn=4, precision 3/5,
+    recall 3/4. If 2 of the 4 over-refusals were accepted in pass A and the
+    judge flagged 1 of those 2, recall_flips is 1/2.
+
+    **One thing to decide BEFORE any real ruling is read: a row with
+    `flagged: None`** (the judge's reply did not parse). It can count as "not
+    flagged" (it stays in recall's denominator, as a miss) or leave every cell
+    (it is only counted in `unparsed`). The two give different recalls from the
+    same rulings, so the choice is fixed here, in the code, ahead of the run.
+
+    Each `pairs` entry is what `pair_with_pass_b` returns. Return:
+
+        {"tp": int, "fp": int, "fn": int, "tn": int, "unparsed": int,
+         "precision":    (k, n, ci),
+         "recall":       (k, n, ci),
+         "recall_flips": (k, n, ci)}
+
+    where `ci` is `stats.wilson_ci(k, n)`, which is None when n is 0.
+    `report_twopass` prints exactly this shape, and `tests/test_judge.py` holds
+    a hand-worked case marked xfail until this is written.
+    """
+    raise NotImplementedError("score_twopass is Betty's stub")
+
+
+def _rate(triple) -> str:
+    k, n, ci = triple
+    if not n or ci is None:
+        return f"{k}/{n}"
+    return f"{k}/{n} = {100 * k / n:.1f}%  (95% Wilson {100 * ci[0]:.1f}–{100 * ci[1]:.1f}%)"
+
+
+def report_twopass(title: str, s: dict) -> None:
+    """One 2×2 and its three rates. Counts first: at these sizes a percentage
+    without its k/n reads as more precise than it is."""
+    log.info("\n%s", title)
+    log.info("  %-22s %20s %18s", "", "pass B: over-refusal", "pass B: refusal OK")
+    log.info("  %-22s %20d %18d", "judge: over-refusal", s["tp"], s["fp"])
+    log.info("  %-22s %20d %18d", "judge: refusal OK", s["fn"], s["tn"])
+    log.info("  unparsed rulings: %d", s["unparsed"])
+    log.info("  precision          %s", _rate(s["precision"]))
+    log.info("  recall             %s", _rate(s["recall"]))
+    log.info("  recall, pass A accepted  %s", _rate(s["recall_flips"]))
+
+
+def main_twopass(sheet_paths: list[str], judge: str, dataset: str,
+                 refresh: bool = False) -> None:
+    """Judge every refusal behind each finished two-pass sheet, then score.
+
+    Every sheet is opened and checked BEFORE the model is looked for or any
+    cache is read, so an unfinished sheet stops the run with nothing judged.
+
+    Rulings are made once per batch and `--gold` filter (`judged_set`), and
+    each sheet picks its rows out of them by id.
+    """
+    paths = [Path(p) for p in sheet_paths]
+    if len({p.resolve() for p in paths}) != len(paths):
+        raise SystemExit("the same --sheet was passed twice")
+    corpus, _queries, qrels = load_beir(dataset)
+    sheets = [open_sheet(p, dataset, lambda: qrels) for p in paths]
+    for s in sheets:
+        log.info("sheet OK: %s (%d rows, both passes complete)", s["path"].name,
+                 len(s["rows"]))
+
+    require_models([judge])
+    rulings: dict[str, list[Judgement]] = {}
+    for s in sheets:
+        key = s["gen_path"].stem + s["key_suffix"]
+        if key not in rulings:
+            rulings[key] = judge_batch(judge, judge_items(s["judged"], corpus), key,
+                                       refresh)
+        s["pairs"] = pair_with_pass_b(s["rows"], rulings[key])
+
+    log.info("\n=== judge × pass B (%s, rubric %s) — over-refusal is the positive "
+             "class ===", judge, RUBRIC_VERSION)
+    groups = [(f"{s['annotator']} · {s['gen_path'].stem.removeprefix('gen__')}",
+               s["pairs"]) for s in sheets]
+    if len(sheets) > 1:
+        groups.append((f"pooled ({len(sheets)} sheets)",
+                       [p for s in sheets for p in s["pairs"]]))
+    try:
+        scored = [(title, score_twopass(pairs)) for title, pairs in groups]
+    except NotImplementedError:
+        log.info("rulings are cached; `score_twopass` is not written yet, so "
+                 "nothing is scored or shown.")
+        return
+    for title, s in scored:
+        report_twopass(title, s)
+
+
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          judges: list[str], refresh: bool, model: str = BI_ENCODER,
          generator: str = GENERATOR, smoke_n: int = 0,
@@ -904,16 +1134,39 @@ if __name__ == "__main__":
     p.add_argument("--axis", choices=sorted(AXIS_FOR.values()),
                    help="with --smoke: take the N rows from this axis only, so "
                         "the run exercises the rule that was just edited")
+    p.add_argument("--sheet", action="append", default=[], metavar="PATH", dest="sheets",
+                   help="a finished two-pass sheet (twopass__<batch>__<annotator>.jsonl); "
+                        "repeatable. Judges the batch's refusals with the one --judge "
+                        "given and scores them against pass B. The sheet's name says "
+                        "which batch, so no batch flag is taken")
     p.add_argument("--refresh", action="store_true", help="re-judge, ignoring the cache")
     p.add_argument("--model", default=BI_ENCODER, help=MODEL_HELP)
     p.add_argument("--generator", default=GENERATOR)
     args = p.parse_args()
+    if args.sheets:
+        if args.bakeoff or args.smoke or args.axis:
+            p.error("--sheet is its own action: not with --bakeoff, --smoke or --axis")
+        # A batch flag here would be read by nothing, and the run would look
+        # as if it had been pointed at that batch.
+        ignored = [f"--{d.replace('_', '-')}" for d in
+                   ("n_queries", "seed", "exclude", "n_context", "top_k", "model",
+                    "generator") if getattr(args, d) != p.get_default(d)]
+        if ignored:
+            p.error(f"{', '.join(ignored)}: not used with --sheet — the sheet's "
+                    "name says which batch it is")
+        # No default judge on this path: one run scores one judge, and the
+        # bake-off slate is a list of candidates, not a choice.
+        if not args.judges or len(args.judges) != 1:
+            p.error("--sheet needs exactly one --judge")
+        main_twopass(args.sheets, args.judges[0], args.dataset, args.refresh)
+        raise SystemExit(0)
     # An explicit action is REQUIRED. `--bakeoff` was parsed and never read, so a
     # bare `python -m retrieval_lab.judge` silently launched a full multi-model
     # run — minutes of GPU and a cache write nobody asked for.
     if not (args.bakeoff or args.smoke):
         p.error("nothing to do — pass --bakeoff to score every candidate, "
-                "or --smoke [N] to check the prompt against a live model first")
+                "--smoke [N] to check the prompt against a live model first, "
+                "or --sheet PATH to judge a finished two-pass sheet")
     if args.axis and not args.smoke:
         p.error("--axis only applies to --smoke")
     main(args.dataset, args.n_queries, args.n_context, args.top_k, args.seed,

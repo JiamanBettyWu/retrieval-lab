@@ -1,0 +1,375 @@
+"""Tests for judging a two-pass sheet (issue #15).
+
+    pytest tests/test_judge_twopass.py
+
+What is pinned: which way "over-refusal" points on both sides of the pairing;
+that an unfinished or edited sheet stops the run before any model is asked;
+that the batch a sheet belongs to is read off its name and then checked; that
+rulings are made once per batch however many sheets share it; and the 2×2 on a
+hand-worked case. No model, no Ollama, no download — every sheet here is
+written and labelled inside the test, from invented rows.
+"""
+import json
+from dataclasses import asdict
+
+import pytest
+
+from retrieval_lab import cache, judge, twopass
+from retrieval_lab.generate import REFUSAL, Generation
+from retrieval_lab.stats import wilson_ci
+
+DATASET = "toyset"
+BATCH = f"{DATASET}__enc__top100__ctx10__gen__v2__n4__seed9"
+CORPUS = {d: {"title": f"Title {d}", "text": f"PASSAGE-TEXT-{d}"} for d in ["dA", "dB", "dC"]}
+QRELS = {"q1": {"dA": 1, "dC": 1}, "q2": {"dC": 1}, "q3": {"dB": 1}, "q4": {"dA": 1}}
+RAW = ("<rationale>The passages do not name the architect.</rationale>\n"
+       "<answer>INSUFFICIENT_CONTEXT</answer>")
+
+
+def gen(query_id, refused=True, truncated=False):
+    return Generation(query_id=query_id, question=f"QUESTION-{query_id}?",
+                      doc_ids=["dA", "dB", "dC"], raw=RAW,
+                      answer=REFUSAL if refused else "Oslo",
+                      rationale="The passages do not name the architect.",
+                      refused=refused, truncated=truncated)
+
+
+# q3 is answered and q5 was cut off, so the batch's refusals are q1, q2, q4.
+GENS = [gen("q1"), gen("q2"), gen("q3", refused=False), gen("q4"),
+        gen("q5", truncated=True)]
+
+
+def keys(*answers):
+    it = iter(answers)
+    return lambda _prompt="": next(it)
+
+
+def ticking(step=2.0):
+    t = [0.0]
+    def clock():
+        t[0] += step
+        return t[0]
+    return clock
+
+
+def label(path, annotator, *answers):
+    twopass.label_twopass(path, annotator, "0.1", ask=keys(*answers),
+                          say=lambda s="": None, clock=ticking())
+
+
+@pytest.fixture
+def repo(tmp_path, monkeypatch):
+    """A cache/ holding one generation batch, and a labels/ directory beside it."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    monkeypatch.setattr(cache, "CACHE_DIR", cache_dir)
+    monkeypatch.setattr(judge, "CACHE_DIR", cache_dir)
+    (cache_dir / f"gen__{BATCH}.json").write_text(json.dumps([asdict(g) for g in GENS]))
+    (tmp_path / "labels").mkdir()
+    return tmp_path
+
+
+def new_sheet(repo, annotator="betty", gold=None):
+    path = repo / "labels" / f"twopass__{BATCH}__{annotator}.jsonl"
+    twopass.write_twopass_sheet(GENS, CORPUS, QRELS, path, annotator, "0.1", gold)
+    return path
+
+
+def finish(path, annotator="betty"):
+    """q1: accepted in pass A, over-refusal in pass B. q2 and q4: rejected, refusal OK."""
+    label(path, annotator, "a", "c", "r", "c", "r", "u")
+    label(path, annotator, "o", "n", "k", "k")
+    return path
+
+
+def ruling(query_id, verdict):
+    return judge.Judgement(query_id=query_id, judge="toy-judge", digest="abc",
+                           axis="refusal_ok", raw=f"<judge_answer>{verdict}</judge_answer>",
+                           verdict=verdict, parsed=verdict is not None)
+
+
+class FakeJudge:
+    """Stands in for the model: answers from a table and counts its calls."""
+    def __init__(self, monkeypatch, verdicts):
+        self.calls = []
+        self.verdicts = verdicts
+        monkeypatch.setattr(judge, "judge_one", self)
+        monkeypatch.setattr(judge, "ollama_digest", lambda model: "abc")
+        monkeypatch.setattr(judge, "load_beir", lambda dataset: (CORPUS, {}, QRELS))
+
+    def __call__(self, judge_name, digest, item, axis, timeout=600):
+        self.calls.append((item["query_id"], axis))
+        return ruling(item["query_id"], self.verdicts[item["query_id"]])
+
+
+# ─────────────────────────── polarity ───────────────────────────
+
+def test_the_over_refusal_key_is_the_positive_class(repo):
+    """Through `PASS_B_CHOICES`, not through a literal False: the stored value
+    is only defined by the word that was on screen when it was entered."""
+    assert twopass.PASS_B_CHOICES["o"] == ("over-refusal", False)
+    assert twopass.PASS_A_CHOICES["a"] == ("accept", True)
+    rows = twopass.read_rows(finish(new_sheet(repo)))
+    js = [ruling("q1", False), ruling("q2", True), ruling("q4", True)]
+    pairs = dict(zip(["q1", "q2", "q4"], judge.pair_with_pass_b(rows, js)))
+    assert pairs["q1"] == {"over_refusal": True, "flagged": True, "accepted_in_pass_a": True}
+    assert pairs["q2"] == {"over_refusal": False, "flagged": False,
+                           "accepted_in_pass_a": False}
+
+
+def test_a_judge_false_is_a_flag_and_the_rubric_says_so(repo):
+    """`flagged` reads verdict False as over-refusal. That is only right while
+    the prompt gives `false` that meaning, so the two are pinned together."""
+    prompt = judge.build_judge_prompt("Q?", ["[1] p"], "", "r", "refusal_ok")
+    assert "the answer is false (over-refusal)" in prompt
+    rows = twopass.read_rows(finish(new_sheet(repo)))
+    js = [ruling("q1", True), ruling("q2", False), ruling("q4", True)]
+    flagged = [p["flagged"] for p in judge.pair_with_pass_b(rows, js)]
+    assert flagged == [False, True, False]
+
+
+def test_an_unparsed_ruling_is_passed_on_marked_not_dropped(repo):
+    rows = twopass.read_rows(finish(new_sheet(repo)))
+    js = [ruling("q1", None), ruling("q2", True), ruling("q4", True)]
+    pairs = judge.pair_with_pass_b(rows, js)
+    assert len(pairs) == 3
+    assert pairs[0]["flagged"] is None
+
+
+def test_a_sheet_row_with_no_ruling_raises(repo):
+    rows = twopass.read_rows(finish(new_sheet(repo)))
+    with pytest.raises(AssertionError, match="1 sheet rows have no ruling"):
+        judge.pair_with_pass_b(rows, [ruling("q1", True), ruling("q2", True)])
+
+
+# ─────────────────────── which batch a sheet is ───────────────────────
+
+def test_the_batch_is_read_off_the_sheet_name(repo):
+    path = repo / "labels" / f"twopass__{BATCH}__betty.jsonl"
+    assert judge.sheet_generation_path(path, "betty") == \
+        cache.CACHE_DIR / f"gen__{BATCH}.json"
+
+
+def test_an_annotator_name_with_double_underscores_does_not_split_the_batch(repo):
+    path = repo / "labels" / f"twopass__{BATCH}__v__1.jsonl"
+    assert judge.sheet_generation_path(path, "v__1") == \
+        cache.CACHE_DIR / f"gen__{BATCH}.json"
+
+
+def test_a_file_not_named_like_a_sheet_is_refused(repo):
+    with pytest.raises(ValueError, match="expected twopass__<batch>__betty.jsonl"):
+        judge.sheet_generation_path(repo / "labels" / "copy-of-sheet.jsonl", "betty")
+
+
+def test_a_sheet_from_another_dataset_is_refused(repo):
+    path = finish(new_sheet(repo))
+    with pytest.raises(ValueError, match="is not a otherset batch"):
+        judge.open_sheet(path, "otherset", lambda: QRELS)
+
+
+def test_a_sheet_renamed_onto_another_batch_fails_the_anchor(repo):
+    """The name is only a pointer; the `raw_sha` on every row is the proof."""
+    other = f"{DATASET}__enc__top100__ctx10__gen__v2__n4__seed10"
+    changed = [gen("q1"), gen("q2"), gen("q4")]
+    for g in changed:
+        g.raw = g.raw.replace("architect", "engineer")
+    (cache.CACHE_DIR / f"gen__{other}.json").write_text(
+        json.dumps([asdict(g) for g in changed]))
+    path = finish(new_sheet(repo))
+    moved = path.rename(path.with_name(f"twopass__{other}__betty.jsonl"))
+    with pytest.raises(AssertionError, match="generation text that has changed"):
+        judge.open_sheet(moved, DATASET, lambda: QRELS)
+
+
+# ─────────────────── an unfinished sheet is never judged ───────────────────
+
+def refuses_before_any_model(repo, monkeypatch, path, match):
+    fake = FakeJudge(monkeypatch, {})
+    monkeypatch.setattr(judge, "require_models", lambda models: pytest.fail(
+        "the judge was looked for before the sheet was checked"))
+    with pytest.raises(AssertionError, match=match):
+        judge.main_twopass([str(path)], "toy-judge", DATASET)
+    assert fake.calls == []
+    assert not list(cache.CACHE_DIR.glob("judge__*"))
+
+
+def test_a_sheet_with_pass_b_unfinished_is_refused(repo, monkeypatch):
+    path = new_sheet(repo)
+    label(path, "betty", "a", "c", "r", "c", "r", "u")      # pass A only
+    refuses_before_any_model(repo, monkeypatch, path, "no valid 'refusal_ok_passages'")
+
+
+def test_a_sheet_with_no_labels_is_refused(repo, monkeypatch):
+    refuses_before_any_model(repo, monkeypatch, new_sheet(repo),
+                             "no valid 'refusal_ok_response'")
+
+
+def test_a_pass_a_label_changed_after_the_lock_is_refused(repo, monkeypatch):
+    path = finish(new_sheet(repo))
+    rows = twopass.read_rows(path)
+    rows[1]["refusal_ok_response"] = True       # was "reject"; still in vocabulary
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    refuses_before_any_model(repo, monkeypatch, path, "pass A was changed after pass B")
+
+
+def test_one_unfinished_sheet_stops_the_others_too(repo, monkeypatch):
+    done = finish(new_sheet(repo, "betty"), "betty")
+    half = new_sheet(repo, "v1")
+    label(half, "v1", "a", "c", "r", "c", "r", "u")
+    fake = FakeJudge(monkeypatch, {})
+    with pytest.raises(AssertionError):
+        judge.main_twopass([str(done), str(half)], "toy-judge", DATASET)
+    assert fake.calls == []
+
+
+def test_the_same_sheet_twice_is_refused(repo, monkeypatch):
+    path = finish(new_sheet(repo))
+    FakeJudge(monkeypatch, {})
+    with pytest.raises(SystemExit, match="passed twice"):
+        judge.main_twopass([str(path), str(path)], "toy-judge", DATASET)
+
+
+# ─────────────────────── the run and its cache ───────────────────────
+
+VERDICTS = {"q1": False, "q2": True, "q4": True}
+
+
+def test_every_refusal_is_judged_once_on_the_refusal_axis_with_passages(repo, monkeypatch):
+    path = finish(new_sheet(repo))
+    fake = FakeJudge(monkeypatch, VERDICTS)
+    seen = []
+    monkeypatch.setattr(judge, "pair_with_pass_b",
+                        lambda rows, js: seen.append((rows, js)) or [])
+    judge.main_twopass([str(path)], "toy-judge", DATASET)
+    # the answered row (q3) and the cut-off row (q5) never reach the judge
+    assert fake.calls == [("q1", "refusal_ok"), ("q2", "refusal_ok"), ("q4", "refusal_ok")]
+    cached = cache.CACHE_DIR / (f"judge__gen__{BATCH}__refusals__toy-judge__"
+                                f"{judge.RUBRIC_VERSION}.json")
+    assert cached.exists()
+    assert [j.query_id for j in seen[0][1]] == ["q1", "q2", "q4"]
+
+
+def test_the_judge_reads_the_corpus_passages(repo):
+    items = judge.judge_items(twopass.eligible_rows(GENS)[0], CORPUS)
+    assert [it["query_id"] for it in items] == ["q1", "q2", "q4"]
+    assert items[0]["passages"] == ["[1] Title dA. PASSAGE-TEXT-dA",
+                                    "[2] Title dB. PASSAGE-TEXT-dB",
+                                    "[3] Title dC. PASSAGE-TEXT-dC"]
+    assert {it["axis"] for it in items} == {"refusal_ok"}
+
+
+def test_two_sheets_on_one_batch_share_one_set_of_rulings(repo, monkeypatch):
+    a = finish(new_sheet(repo, "betty"), "betty")
+    b = finish(new_sheet(repo, "v1"), "v1")
+    fake = FakeJudge(monkeypatch, VERDICTS)
+    judge.main_twopass([str(a), str(b)], "toy-judge", DATASET)
+    assert len(fake.calls) == 3
+
+
+def test_a_filtered_sheet_judges_only_its_strata_under_its_own_key(repo, monkeypatch):
+    """A `--gold` sheet leaves strata off, and nobody labelled those rows: the
+    judge is not asked about them, and the smaller set gets its own cache file
+    so it cannot be mistaken for the full batch's."""
+    full = finish(new_sheet(repo, "betty"), "betty")
+    part = new_sheet(repo, "v1", gold={0, 2})        # only q1 has 0 or 2 gold passages
+    assert [r["query_id"] for r in twopass.read_rows(part)] == ["q1"]
+    label(part, "v1", "a", "c")
+    label(part, "v1", "o", "n")
+    fake = FakeJudge(monkeypatch, VERDICTS)
+    paired = []
+    real = judge.pair_with_pass_b
+    monkeypatch.setattr(judge, "pair_with_pass_b",
+                        lambda rows, js: paired.append(real(rows, js)) or paired[-1])
+    judge.main_twopass([str(full)], "toy-judge", DATASET)
+    judge.main_twopass([str(part)], "toy-judge", DATASET)
+    assert [q for q, _axis in fake.calls] == ["q1", "q2", "q4", "q1"]
+    assert [len(p) for p in paired] == [3, 1]
+    names = sorted(f.name.split("__refusals")[1] for f in cache.CACHE_DIR.glob("judge__*"))
+    assert names == [f"-gold02__toy-judge__{judge.RUBRIC_VERSION}.json",
+                     f"__toy-judge__{judge.RUBRIC_VERSION}.json"]
+
+
+def test_a_spreadsheet_file_reads_from_the_whole_batch_rulings(repo):
+    """A spreadsheet annotator's file holds part of the batch and no filter."""
+    rows = [{"query_id": "q1", "timing": "session"}]
+    got = judge.judged_set(rows, GENS, lambda: pytest.fail("no filter, no qrels"))
+    assert [g.query_id for g in got["judged"]] == ["q1", "q2", "q4"]
+    assert got["key_suffix"] == "__refusals"
+
+
+def test_a_second_run_reads_the_cache(repo, monkeypatch):
+    path = finish(new_sheet(repo))
+    fake = FakeJudge(monkeypatch, VERDICTS)
+    judge.main_twopass([str(path)], "toy-judge", DATASET)
+    judge.main_twopass([str(path)], "toy-judge", DATASET)
+    assert len(fake.calls) == 3
+
+
+def test_cached_rulings_for_other_rows_of_the_same_count_are_refused(repo, monkeypatch):
+    """`judge_batch` used to compare counts only."""
+    FakeJudge(monkeypatch, VERDICTS)
+    items = judge.judge_items(twopass.eligible_rows(GENS)[0], CORPUS)
+    judge.judge_batch("toy-judge", items, "k")
+    swapped = [dict(items[0], query_id="q9")] + items[1:]
+    with pytest.raises(AssertionError, match="different draw"):
+        judge.judge_batch("toy-judge", swapped, "k")
+
+
+# ─────────────────────────── score_twopass ───────────────────────────
+# Marked xfail(strict) while `score_twopass` is a stub: the suite stays green,
+# and the marker fails the suite the moment the function works, so it has to
+# be removed then.
+
+STUB = pytest.mark.xfail(raises=NotImplementedError, strict=True,
+                         reason="score_twopass is not written yet")
+
+
+def pair(over_refusal, flagged, accepted=False):
+    return {"over_refusal": over_refusal, "flagged": flagged,
+            "accepted_in_pass_a": accepted}
+
+
+# The docstring's worked example: 10 rows, 4 over-refusals in pass B, the judge
+# flags 5 rows and 3 of them are among the 4. Two of the 4 were accepted in
+# pass A, and the judge flagged one of those two.
+WORKED = ([pair(True, True, accepted=True), pair(True, True), pair(True, True),
+           pair(True, False, accepted=True)]
+          + [pair(False, True), pair(False, True, accepted=True)]
+          + [pair(False, False, accepted=True)] * 2 + [pair(False, False)] * 2)
+
+
+@STUB
+def test_the_two_by_two_on_a_hand_worked_case():
+    s = judge.score_twopass(WORKED)
+    assert (s["tp"], s["fp"], s["fn"], s["tn"]) == (3, 2, 1, 4)
+    assert s["unparsed"] == 0
+    assert s["precision"] == (3, 5, wilson_ci(3, 5))
+    assert s["recall"] == (3, 4, wilson_ci(3, 4))
+
+
+@STUB
+def test_recall_on_the_rows_pass_a_accepted():
+    """Only over-refusals that pass A accepted are in this denominator: the two
+    accepted rows that pass B called refusal OK are not."""
+    assert judge.score_twopass(WORKED)["recall_flips"] == (1, 2, wilson_ci(1, 2))
+
+
+@STUB
+def test_row_order_does_not_change_the_score():
+    assert judge.score_twopass(WORKED[::-1]) == judge.score_twopass(WORKED)
+
+
+@STUB
+def test_no_over_refusals_gives_an_empty_recall_not_a_crash():
+    s = judge.score_twopass([pair(False, False), pair(False, True)])
+    assert s["recall"] == (0, 0, None)
+    assert s["recall_flips"] == (0, 0, None)
+    assert s["precision"] == (0, 1, wilson_ci(0, 1))
+
+
+@STUB
+def test_unparsed_rulings_are_counted():
+    """Pins the count only. Whether such a row also sits in a denominator is
+    the decision `score_twopass` records, so no test here assumes it."""
+    s = judge.score_twopass(WORKED + [pair(True, None), pair(False, None)])
+    assert s["unparsed"] == 2

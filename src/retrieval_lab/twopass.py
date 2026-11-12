@@ -487,6 +487,44 @@ def validate_twopass(rows: list[dict], expected_ids: set[str]) -> None:
     check_lock(rows, required=True)
 
 
+def sheet_header(rows: list[dict]) -> tuple[str, str]:
+    """The one annotator and the one guide version a file was written under,
+    read from its rows. Raises unless there is exactly one of each."""
+    who = {r["annotator"] for r in rows}
+    versions = {r["guide_version"] for r in rows}
+    if len(who) != 1 or len(versions) != 1:
+        raise AssertionError(
+            f"a label file holds one annotator under one guide version; this one "
+            f"holds annotators {sorted(who)} and guide versions {sorted(versions)}"
+        )
+    return who.pop(), versions.pop()
+
+
+def check_file(path: Path, gens: list[Generation], gen_path: Path, load_qrels,
+               annotator: str | None = None,
+               guide_version: str | None = None) -> tuple[list[dict], dict | None]:
+    """Everything `--check` verifies, as one function. Returns the rows, plus the
+    minutes per pass for a spreadsheet file (None for a terminal one).
+
+    One function because `judge.py` must refuse exactly the files `--check`
+    refuses: a second copy of this sequence is a second thing to drift.
+    Without `annotator` / `guide_version` they are read from the rows, which
+    must then agree with each other (`sheet_header`). The assignment of a
+    spreadsheet file is looked up beside the file.
+    """
+    from . import sheets          # imports this module; deferred to avoid a cycle
+
+    rows = load_labels(path, gens)      # anchor check: the batch was not regenerated
+    if annotator is None or guide_version is None:
+        annotator, guide_version = sheet_header(rows)
+    check_header(rows, annotator, guide_version)
+    if sheets.is_sheet_file(path):
+        assignment = sheets.read_assignment(sheets.assignment_path(path.parent, gen_path))
+        return rows, sheets.check_sheet_file(path, rows, assignment, annotator)
+    validate_twopass(rows, expected_ids(rows, gens, load_qrels))
+    return rows, None
+
+
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
          annotator: str | None, guide_version: str | None, out_dir: Path, label: bool,
          check: bool, model: str = BI_ENCODER, generator: str = GENERATOR,
@@ -581,22 +619,17 @@ def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
                 f"no sheet at {path} — write it first with:\n"
                 f"  python -m retrieval_lab.twopass {flags}"
             )
-        rows = load_labels(path, gens)  # anchor check: the batch was not regenerated
         if label:
+            load_labels(path, gens)     # anchor check: the batch was not regenerated
             label_twopass(path, annotator, guide_version)
             return
-        check_header(rows, annotator, guide_version)
-        if sheets.is_sheet_file(path):
-            assignment = sheets.read_assignment(sheets.assignment_path(out_dir, gen_path))
-            minutes = sheets.check_sheet_file(path, rows, assignment, annotator)
-            log.info("labels OK: %d rows, both passes complete, anchored to the batch",
-                     len(rows))
+        rows, minutes = check_file(path, gens, gen_path, lambda: load_beir(dataset)[2],
+                                   annotator, guide_version)
+        log.info("labels OK: %d rows, both passes complete, anchored to the batch", len(rows))
+        if minutes:
             log.info("time: pass A %.1f min (%.2f per row), pass B %.1f min (%.2f per row)",
                      minutes["A"], minutes["A"] / len(rows),
                      minutes["B"], minutes["B"] / len(rows))
-            return
-        validate_twopass(rows, expected_ids(rows, gens, lambda: load_beir(dataset)[2]))
-        log.info("labels OK: %d rows, both passes complete, anchored to the batch", len(rows))
         return
 
     corpus, _queries, qrels = load_beir(dataset)
