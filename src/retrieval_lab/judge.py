@@ -57,7 +57,7 @@ The four functions that decide what this module MEANS are Betty's:
     cohen_kappa()         the agreement statistic the README will publish
     rank_candidates()     what "separates grounded from ungrounded" means as a
                           number, which is the actual bake-off decision
-A fifth, for the `--sheet` path, is also Betty's and still a stub:
+A fifth, for the `--sheet` path, is also Betty's:
     score_twopass()       the judge against pass B: the 2×2, precision, recall
 Everything else — transport, timing, caching, digests, validation, the table —
 is wired below.
@@ -83,6 +83,7 @@ from .generate import (GENERATOR, PROMPT_VERSION, Generation, call_ollama,
                        cached_generations, excluded_ids)
 from .observability import op
 from .retrieve import BI_ENCODER, MODEL_HELP
+from .stats import wilson_ci
 from .twopass import check_file, expected_ids, read_rows, sheet_header
 
 log = logging.getLogger("retrieval_lab")
@@ -965,7 +966,7 @@ def pair_with_pass_b(rows: list[dict], js: list[Judgement]) -> list[dict]:
     return pairs
 
 
-# ── Betty's stub ──
+# ── Betty's ──
 def score_twopass(pairs: list[dict]) -> dict:
     """The judge against pass B on one set of rows: the 2×2 and three rates.
 
@@ -987,11 +988,7 @@ def score_twopass(pairs: list[dict]) -> dict:
     recall 3/4. If 2 of the 4 over-refusals were accepted in pass A and the
     judge flagged 1 of those 2, recall_flips is 1/2.
 
-    **One thing to decide BEFORE any real ruling is read: a row with
-    `flagged: None`** (the judge's reply did not parse). It can count as "not
-    flagged" (it stays in recall's denominator, as a miss) or leave every cell
-    (it is only counted in `unparsed`). The two give different recalls from the
-    same rulings, so the choice is fixed here, in the code, ahead of the run.
+    An unparsed judge result counts as not flagged.
 
     Each `pairs` entry is what `pair_with_pass_b` returns. Return:
 
@@ -1001,10 +998,40 @@ def score_twopass(pairs: list[dict]) -> dict:
          "recall_flips": (k, n, ci)}
 
     where `ci` is `stats.wilson_ci(k, n)`, which is None when n is 0.
-    `report_twopass` prints exactly this shape, and `tests/test_judge.py` holds
-    a hand-worked case marked xfail until this is written.
+    `report_twopass` prints exactly this shape, and
+    `tests/test_judge_twopass.py` pins the worked example above.
     """
-    raise NotImplementedError("score_twopass is Betty's stub")
+    tp, fp, fn, tn, unparsed = 0, 0, 0, 0, 0
+    tp_flips, p_recall = 0, 0
+
+    for pair in pairs:
+        if pair["flagged"] is None:
+            unparsed+=1
+
+        if pair["over_refusal"] and pair["flagged"]:
+            tp+=1
+        elif pair["over_refusal"] and (not pair["flagged"] or pair["flagged"] is None):
+            fn+=1
+        elif pair["flagged"] and (not pair["over_refusal"]):
+            fp+=1
+        else:
+            tn+=1
+
+        if pair["over_refusal"] and pair["accepted_in_pass_a"]:
+            p_recall+=1
+            if pair["flagged"]: tp_flips+=1
+
+    assert len(pairs) == (tp+fp+fn+tn)
+    return {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+        "unparsed": unparsed,
+        "precision": (tp, tp+fp, wilson_ci(tp, tp+fp)),
+        "recall": (tp, tp+fn, wilson_ci(tp, tp+fn)),
+        "recall_flips": (tp_flips, p_recall, wilson_ci(tp_flips, p_recall))
+    }
 
 
 def _rate(triple) -> str:
@@ -1062,14 +1089,8 @@ def main_twopass(sheet_paths: list[str], judge: str, dataset: str,
     if len(sheets) > 1:
         groups.append((f"pooled ({len(sheets)} sheets)",
                        [p for s in sheets for p in s["pairs"]]))
-    try:
-        scored = [(title, score_twopass(pairs)) for title, pairs in groups]
-    except NotImplementedError:
-        log.info("rulings are cached; `score_twopass` is not written yet, so "
-                 "nothing is scored or shown.")
-        return
-    for title, s in scored:
-        report_twopass(title, s)
+    for title, pairs in groups:
+        report_twopass(title, score_twopass(pairs))
 
 
 def main(dataset: str, n_queries: int, n_context: int, top_k: int, seed: int,
