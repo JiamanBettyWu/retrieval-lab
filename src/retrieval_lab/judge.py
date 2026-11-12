@@ -44,7 +44,7 @@ in advance is the format gate, `MAX_MISS_RATE` — see its comment below.
 
 **Scope: Ollama transport only.** D10 names Sonnet 5 as the primary judge, and
 certifying it against this same fixture needs an API path rather than
-`call_ollama`. That is deliberate future work, not an oversight — the fixture,
+an Ollama call. That is deliberate future work, not an oversight — the fixture,
 the rubric and the scoring below are all transport-agnostic; only `judge_one`
 would gain a branch.
 
@@ -79,8 +79,8 @@ from .cache import CACHE_DIR, generation_cache_path, judgement_cache_path
 from .data import load_beir
 from .fixture import (NOT_APPLICABLE, load_generations, load_labels,
                       sheet_path)
-from .generate import (GENERATOR, PROMPT_VERSION, Generation, call_ollama,
-                       cached_generations, excluded_ids)
+from .generate import (GENERATOR, PROMPT_VERSION, Generation, cached_generations,
+                       excluded_ids, ollama_generate)
 from .observability import op
 from .retrieve import BI_ENCODER, MODEL_HELP
 from .stats import wilson_ci
@@ -139,6 +139,13 @@ MAX_MISS_RATE = 0.10
 # decision quietly becomes whatever the code happens to do.
 KAPPA_TIE_BAND = 0.2
 
+# A safety net on the judge's reply, not a budget. The longest of the 60
+# rulings cached before the cap existed is 730 characters, roughly 200 tokens,
+# so this is about ten times the longest real reply: it never cuts a ruling,
+# and it ends a reply that repeats itself in a minute or two instead of letting
+# it run into the transport timeout, which raises and loses the whole batch.
+JUDGE_MAX_TOKENS = 2048
+
 # Which axis applies to which row, mirroring fixture.INAPPLICABLE_AXIS. A refusal
 # makes no claims to ground; an answer cannot be an over-refusal. The judge is
 # asked only the applicable question, so its output lines up with the sheet
@@ -157,6 +164,8 @@ class Judgement:
     verdict: object = None  # True / False, or None when parsing missed
     parsed: bool = True     # False = a format failure, not a judgement
     seconds: float = 0.0    # wall-clock for THIS call; see `judge_batch`
+    truncated: object = None  # True = JUDGE_MAX_TOKENS ended the reply;
+                              # None = made before the cap was recorded
 
 
 # ─────────────────────────── Betty's stubs ───────────────────────────
@@ -601,13 +610,24 @@ def judge_one(judge: str, digest: str, item: dict, axis: str,
     prompt = build_judge_prompt(item["question"], item["passages"],
                                 item["answer"], item["rationale"], axis)
     t0 = time.perf_counter()
-    raw = call_ollama(prompt, model=judge, timeout=timeout)
+    reply = ollama_generate(prompt, model=judge, timeout=timeout,
+                            max_tokens=JUDGE_MAX_TOKENS)
     seconds = time.perf_counter() - t0
 
-    verdict = parse_judgement(raw)
+    raw = reply["response"]
+    truncated = reply.get("done_reason") == "length"
+    # A reply the cap ended is not a ruling, even if a complete verdict tag
+    # sits somewhere inside it: `parse_judgement` reads the LAST tag as the
+    # settled one, and a reply that never stopped never settled. It is a
+    # format miss, counted like any other.
+    verdict = None if truncated else parse_judgement(raw)
+    if truncated:
+        log.warning("  %s: the reply for %s reached the %d-token cap — recorded "
+                    "as unparsed", judge, item["query_id"], JUDGE_MAX_TOKENS)
     return Judgement(query_id=item["query_id"], judge=judge, digest=digest,
                      axis=axis, raw=raw, verdict=verdict,
-                     parsed=verdict is not None, seconds=seconds)
+                     parsed=verdict is not None, seconds=seconds,
+                     truncated=truncated)
 
 
 def validate(js: list[Judgement], judge: str) -> None:

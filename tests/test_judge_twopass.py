@@ -383,3 +383,37 @@ def test_the_table_prints_counts_and_intervals(caplog):
     assert "3/4 = 75.0%" in out
     assert "0/0" in out and "0/0 =" not in out      # an empty rate has no percentage
     assert "unparsed rulings: 1" in out
+
+
+# ─────────────────────────── the cap on the judge ───────────────────────────
+
+def one_ruling(monkeypatch, reply):
+    seen = {}
+    def fake(prompt, model, timeout, max_tokens):
+        seen["max_tokens"] = max_tokens
+        return reply
+    monkeypatch.setattr(judge, "ollama_generate", fake)
+    item = {"query_id": "q1", "question": "Q?", "passages": ["[1] p"],
+            "answer": "", "rationale": "r"}
+    return judge.judge_one("toy-judge", "abc", item, "refusal_ok"), seen
+
+
+def test_the_judge_call_is_capped(monkeypatch):
+    j, seen = one_ruling(monkeypatch, {"response": "<judge_answer>false</judge_answer>",
+                                       "done_reason": "stop"})
+    assert seen["max_tokens"] == judge.JUDGE_MAX_TOKENS
+    assert (j.verdict, j.parsed, j.truncated) == (False, True, False)
+
+
+def test_a_reply_the_cap_ended_is_unparsed_even_with_a_verdict_tag_in_it(monkeypatch):
+    looping = "<judge_answer>true</judge_answer> and again " * 50
+    j, _ = one_ruling(monkeypatch, {"response": looping, "done_reason": "length"})
+    assert (j.verdict, j.parsed, j.truncated) == (None, False, True)
+    assert j.raw == looping                     # kept as emitted, for reading later
+
+
+def test_rulings_cached_before_the_cap_still_load():
+    old = {"query_id": "q1", "judge": "m", "digest": "abc", "axis": "refusal_ok",
+           "raw": "<judge_answer>true</judge_answer>", "verdict": True,
+           "parsed": True, "seconds": 1.0}
+    assert judge.Judgement(**old).truncated is None
