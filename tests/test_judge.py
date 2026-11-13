@@ -46,20 +46,30 @@ RATIONALE = "Passage [1] names him but does not give a father."
 
 # ──────────────────────────── build_judge_prompt ────────────────────────────
 
-# Rulings and labels made under v3 exist, so its wording may never change.
-# These are sha256 fingerprints of the v3 prompts for the fixed row below,
-# taken from the code as it stood before v4 was added.
+# A rubric version's wording may never change once it exists: rulings are
+# cached under the version's name, so a reworded version would serve rulings
+# made under the old wording. These are sha256 fingerprints of each version's
+# prompts for the fixed row below. The v3 ones were taken from the code as it
+# stood before v4 was added. `grounded` has one wording under both.
 V3_ROW = ("Q?", ["[1] T. p one", "[2] U. p two"], "I cannot answer", "No passage says.")
-V3_FINGERPRINTS = {
-    "refusal_ok": "f690fbcff8508739b01848121a39e6f9ab0674762625721e5e111e798f2db152",
-    "grounded": "ddab4c1844f91a82716f3779e972e6ceed2bb5d7db2bf67dabc194c6acddd42a",
+GROUNDED = "ddab4c1844f91a82716f3779e972e6ceed2bb5d7db2bf67dabc194c6acddd42a"
+FINGERPRINTS = {
+    ("v3", "refusal_ok"): "f690fbcff8508739b01848121a39e6f9ab0674762625721e5e111e798f2db152",
+    ("v3", "grounded"): GROUNDED,
+    ("v4", "refusal_ok"): "92eaa11ea3729daa15b9017757a3278508c0f5873ff47fdf8b86a70e134bc2dc",
+    ("v4", "grounded"): GROUNDED,
 }
 
 
-@pytest.mark.parametrize("axis", sorted(V3_FINGERPRINTS))
-def test_rubric_v3_is_frozen(axis):
-    prompt = build_judge_prompt(*V3_ROW, axis, rubric="v3")
-    assert hashlib.sha256(prompt.encode()).hexdigest() == V3_FINGERPRINTS[axis]
+@pytest.mark.parametrize("rubric,axis", sorted(FINGERPRINTS))
+def test_every_rubric_version_is_frozen(rubric, axis):
+    prompt = build_judge_prompt(*V3_ROW, axis, rubric=rubric)
+    assert hashlib.sha256(prompt.encode()).hexdigest() == FINGERPRINTS[(rubric, axis)]
+
+
+def test_every_rubric_version_has_a_fingerprint_and_a_guide_may_only_name_a_real_one():
+    assert {r for r, _ in FINGERPRINTS} == set(judge_module.RUBRIC_VERSIONS)
+    assert set(judge_module.RUBRIC_FOR_GUIDE.values()) <= set(judge_module.RUBRIC_VERSIONS)
 
 
 def test_rubric_v4_is_v3_plus_the_contradicted_detail_sentence_and_nothing_else():

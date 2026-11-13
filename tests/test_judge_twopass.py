@@ -52,8 +52,8 @@ def ticking(step=2.0):
     return clock
 
 
-def label(path, annotator, *answers):
-    twopass.label_twopass(path, annotator, "0.1", ask=keys(*answers),
+def label(path, annotator, *answers, guide="0.1"):
+    twopass.label_twopass(path, annotator, guide, ask=keys(*answers),
                           say=lambda s="": None, clock=ticking())
 
 
@@ -69,16 +69,20 @@ def repo(tmp_path, monkeypatch):
     return tmp_path
 
 
-def new_sheet(repo, annotator="betty", gold=None):
+GUIDE = "0.1"
+RUBRIC = judge.RUBRIC_FOR_GUIDE[GUIDE]      # the rubric a sheet under GUIDE is ruled under
+
+
+def new_sheet(repo, annotator="betty", gold=None, guide=GUIDE):
     path = repo / "labels" / f"twopass__{BATCH}__{annotator}.jsonl"
-    twopass.write_twopass_sheet(GENS, CORPUS, QRELS, path, annotator, "0.1", gold)
+    twopass.write_twopass_sheet(GENS, CORPUS, QRELS, path, annotator, guide, gold)
     return path
 
 
-def finish(path, annotator="betty"):
+def finish(path, annotator="betty", guide="0.1"):
     """q1: accepted in pass A, over-refusal in pass B. q2 and q4: rejected, refusal OK."""
-    label(path, annotator, "a", "c", "r", "c", "r", "u")
-    label(path, annotator, "o", "n", "k", "k")
+    label(path, annotator, "a", "c", "r", "c", "r", "u", guide=guide)
+    label(path, annotator, "o", "n", "k", "k", guide=guide)
     return path
 
 
@@ -247,25 +251,56 @@ def test_every_refusal_is_judged_once_on_the_refusal_axis_with_passages(repo, mo
     # the answered row (q3) and the cut-off row (q5) never reach the judge
     assert fake.calls == [("q1", "refusal_ok"), ("q2", "refusal_ok"), ("q4", "refusal_ok")]
     cached = cache.CACHE_DIR / (f"judge__gen__{BATCH}__refusals__toy-judge__"
-                                f"{judge.RUBRIC_VERSION}.json")
+                                f"{RUBRIC}.json")
     assert cached.exists()
     assert [j.query_id for j in seen[0][1]] == ["q1", "q2", "q4"]
 
 
-def test_an_older_rubric_rules_under_its_own_wording_and_its_own_cache(repo, monkeypatch):
-    """A sheet labelled under an older guide is scored like for like only by
-    the rubric that states that guide's rule. Its rulings must be made under
-    that wording and must not land in, or be read from, the current file."""
-    path = finish(new_sheet(repo))
+def test_the_sheets_guide_version_picks_the_rubric_and_each_rubric_has_its_own_cache(
+        repo, monkeypatch):
+    """A ruling is scored against a label, so it must be made under the rule
+    the label was made under. The sheet says which guide that was; no flag and
+    no default may say otherwise. Rulings under one rubric must not land in,
+    be read from, or disturb the file of another."""
+    old = finish(new_sheet(repo, "betty", guide="0.1"), "betty")
+    new = finish(new_sheet(repo, "v1", guide="0.2"), "v1", guide="0.2")
     fake = FakeJudge(monkeypatch, VERDICTS)
-    judge.main_twopass([str(path)], "toy-judge", DATASET, rubric="v3")
-    assert set(fake.rubrics) == {"v3"}
     stem = f"judge__gen__{BATCH}__refusals__toy-judge__"
+
+    judge.main_twopass([str(old)], "toy-judge", DATASET)
+    assert fake.rubrics == ["v3"] * 3
     assert (cache.CACHE_DIR / f"{stem}v3.json").exists()
-    assert not (cache.CACHE_DIR / f"{stem}{judge.RUBRIC_VERSION}.json").exists()
-    # the current rubric then judges again: it does not reuse v3's rulings
-    judge.main_twopass([str(path)], "toy-judge", DATASET)
-    assert fake.rubrics.count(judge.RUBRIC_VERSION) == 3
+    assert not (cache.CACHE_DIR / f"{stem}v4.json").exists()
+
+    judge.main_twopass([str(new)], "toy-judge", DATASET)     # judged again, under v4
+    assert fake.rubrics == ["v3"] * 3 + ["v4"] * 3
+    v3_bytes = (cache.CACHE_DIR / f"{stem}v3.json").read_bytes()
+
+    judge.main_twopass([str(old)], "toy-judge", DATASET)     # reads its own file back
+    judge.main_twopass([str(new)], "toy-judge", DATASET)
+    assert len(fake.rubrics) == 6
+    assert (cache.CACHE_DIR / f"{stem}v3.json").read_bytes() == v3_bytes
+
+
+def test_two_sheets_under_different_guides_in_one_run_each_get_their_own_rubric(
+        repo, monkeypatch, caplog):
+    old = finish(new_sheet(repo, "betty", guide="0.1"), "betty")
+    new = finish(new_sheet(repo, "v1", guide="0.2"), "v1", guide="0.2")
+    fake = FakeJudge(monkeypatch, VERDICTS)
+    with caplog.at_level("INFO"):
+        judge.main_twopass([str(old), str(new)], "toy-judge", DATASET)
+    assert sorted(fake.rubrics) == ["v3"] * 3 + ["v4"] * 3
+    assert "betty · guide 0.1 · rubric v3 ·" in caplog.text
+    assert "v1 · guide 0.2 · rubric v4 ·" in caplog.text
+
+
+def test_a_guide_version_with_no_rubric_stops_the_run_before_anything_is_judged(
+        repo, monkeypatch):
+    path = finish(new_sheet(repo, guide="0.3"), guide="0.3")
+    fake = FakeJudge(monkeypatch, VERDICTS)
+    with pytest.raises(SystemExit, match="guide 0.3, and no rubric"):
+        judge.main_twopass([str(path)], "toy-judge", DATASET)
+    assert fake.calls == []
 
 
 def test_the_judge_reads_the_corpus_passages(repo):
@@ -304,8 +339,8 @@ def test_a_filtered_sheet_judges_only_its_strata_under_its_own_key(repo, monkeyp
     assert [q for q, _axis in fake.calls] == ["q1", "q2", "q4", "q1"]
     assert [len(p) for p in paired] == [3, 1]
     names = sorted(f.name.split("__refusals")[1] for f in cache.CACHE_DIR.glob("judge__*"))
-    assert names == [f"-gold02__toy-judge__{judge.RUBRIC_VERSION}.json",
-                     f"__toy-judge__{judge.RUBRIC_VERSION}.json"]
+    assert names == [f"-gold02__toy-judge__{RUBRIC}.json",
+                     f"__toy-judge__{RUBRIC}.json"]
 
 
 def test_a_spreadsheet_file_reads_from_the_whole_batch_rulings(repo):
