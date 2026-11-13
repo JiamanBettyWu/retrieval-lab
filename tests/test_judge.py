@@ -22,10 +22,12 @@ a test that breaks on rewording would train you to edit the test. What is
 asserted is structure: which axis's rules appear, that the rationale is present,
 and that nothing verdict-shaped is echoable out of the prompt.
 """
+import hashlib
 import math
 
 import pytest
 
+from retrieval_lab import judge as judge_module
 from retrieval_lab.judge import (
     smoke_items,
     KAPPA_TIE_BAND,
@@ -43,6 +45,57 @@ RATIONALE = "Passage [1] names him but does not give a father."
 
 
 # ──────────────────────────── build_judge_prompt ────────────────────────────
+
+# A rubric version's wording may never change once it exists: rulings are
+# cached under the version's name, so a reworded version would serve rulings
+# made under the old wording. These are sha256 fingerprints of each version's
+# prompts for the fixed row below. The v3 ones were taken from the code as it
+# stood before v4 was added. `grounded` has one wording under both.
+V3_ROW = ("Q?", ["[1] T. p one", "[2] U. p two"], "I cannot answer", "No passage says.")
+GROUNDED = "ddab4c1844f91a82716f3779e972e6ceed2bb5d7db2bf67dabc194c6acddd42a"
+FINGERPRINTS = {
+    ("v3", "refusal_ok"): "f690fbcff8508739b01848121a39e6f9ab0674762625721e5e111e798f2db152",
+    ("v3", "grounded"): GROUNDED,
+    ("v4", "refusal_ok"): "92eaa11ea3729daa15b9017757a3278508c0f5873ff47fdf8b86a70e134bc2dc",
+    ("v4", "grounded"): GROUNDED,
+}
+
+
+@pytest.mark.parametrize("rubric,axis", sorted(FINGERPRINTS))
+def test_every_rubric_version_is_frozen(rubric, axis):
+    prompt = build_judge_prompt(*V3_ROW, axis, rubric=rubric)
+    assert hashlib.sha256(prompt.encode()).hexdigest() == FINGERPRINTS[(rubric, axis)]
+
+
+def test_every_rubric_version_has_a_fingerprint_and_a_guide_may_only_name_a_real_one():
+    assert {r for r, _ in FINGERPRINTS} == set(judge_module.RUBRIC_VERSIONS)
+    assert set(judge_module.RUBRIC_FOR_GUIDE.values()) <= set(judge_module.RUBRIC_VERSIONS)
+
+
+def test_rubric_v4_is_v3_plus_the_contradicted_detail_sentence_and_nothing_else():
+    """v4 mirrors one added rule of the labelling guide. Any other difference
+    from v3 would be a change to the judge that no label asked for."""
+    v3 = build_judge_prompt(*V3_ROW, "refusal_ok", rubric="v3")
+    v4 = build_judge_prompt(*V3_ROW, "refusal_ok", rubric="v4")
+    anchor = "  3. THE PASSAGES DISAGREE, and nothing says which is right."
+    head, tail = v3.split(anchor)
+    assert v4.startswith(head + anchor) and v4.endswith(tail)
+    added = v4[len(head + anchor):len(v4) - len(tail)]
+    assert "CONTRADICTS A DETAIL IN THE QUESTION" in added
+    assert "The refusal was then correct (true)" in added
+    assert added.count("\n") == 4            # one sentence block, four lines
+    # the other axis has no such rule: its wording is the same under both
+    assert (build_judge_prompt(*V3_ROW, "grounded", rubric="v4")
+            == build_judge_prompt(*V3_ROW, "grounded", rubric="v3"))
+
+
+def test_the_default_rubric_is_the_current_one_and_an_unknown_one_raises():
+    assert judge_module.RUBRIC_VERSION == judge_module.RUBRIC_VERSIONS[-1]
+    assert (build_judge_prompt(*V3_ROW, "refusal_ok")
+            == build_judge_prompt(*V3_ROW, "refusal_ok", rubric=judge_module.RUBRIC_VERSION))
+    with pytest.raises(ValueError, match="unknown rubric"):
+        build_judge_prompt(*V3_ROW, "refusal_ok", rubric="v5")
+
 
 @pytest.mark.parametrize("axis", ["grounded", "refusal_ok"])
 def test_passages_are_joined_not_repr(axis):
