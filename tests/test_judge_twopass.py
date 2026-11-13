@@ -92,13 +92,16 @@ class FakeJudge:
     """Stands in for the model: answers from a table and counts its calls."""
     def __init__(self, monkeypatch, verdicts):
         self.calls = []
+        self.rubrics = []
         self.verdicts = verdicts
         monkeypatch.setattr(judge, "judge_one", self)
         monkeypatch.setattr(judge, "ollama_digest", lambda model: "abc")
         monkeypatch.setattr(judge, "load_beir", lambda dataset: (CORPUS, {}, QRELS))
 
-    def __call__(self, judge_name, digest, item, axis, timeout=600):
+    def __call__(self, judge_name, digest, item, axis, timeout=600,
+                 rubric=judge.RUBRIC_VERSION):
         self.calls.append((item["query_id"], axis))
+        self.rubrics.append(rubric)
         return ruling(item["query_id"], self.verdicts[item["query_id"]])
 
 
@@ -247,6 +250,22 @@ def test_every_refusal_is_judged_once_on_the_refusal_axis_with_passages(repo, mo
                                 f"{judge.RUBRIC_VERSION}.json")
     assert cached.exists()
     assert [j.query_id for j in seen[0][1]] == ["q1", "q2", "q4"]
+
+
+def test_an_older_rubric_rules_under_its_own_wording_and_its_own_cache(repo, monkeypatch):
+    """A sheet labelled under an older guide is scored like for like only by
+    the rubric that states that guide's rule. Its rulings must be made under
+    that wording and must not land in, or be read from, the current file."""
+    path = finish(new_sheet(repo))
+    fake = FakeJudge(monkeypatch, VERDICTS)
+    judge.main_twopass([str(path)], "toy-judge", DATASET, rubric="v3")
+    assert set(fake.rubrics) == {"v3"}
+    stem = f"judge__gen__{BATCH}__refusals__toy-judge__"
+    assert (cache.CACHE_DIR / f"{stem}v3.json").exists()
+    assert not (cache.CACHE_DIR / f"{stem}{judge.RUBRIC_VERSION}.json").exists()
+    # the current rubric then judges again: it does not reuse v3's rulings
+    judge.main_twopass([str(path)], "toy-judge", DATASET)
+    assert fake.rubrics.count(judge.RUBRIC_VERSION) == 3
 
 
 def test_the_judge_reads_the_corpus_passages(repo):

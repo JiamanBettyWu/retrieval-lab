@@ -102,7 +102,14 @@ CANDIDATES = ["mistral-small", "gemma3:4b"]
 # cache serving judgements made under the previous wording. It is in
 # `judgement_cache_path`, so a bump invalidates judgements without touching the
 # generations they scored.
-RUBRIC_VERSION = "v3"
+#
+# v4 (2026-11-12) is v3 plus one sentence under condition 3 of `refusal_ok`:
+# a passage that contradicts a detail in the question. It mirrors labelling
+# guide 0.2 and changes nothing else. v3 stays selectable (`--rubric v3` with
+# `--sheet`), because rulings and labels made under it exist: a sheet labelled
+# under guide 0.1 is scored like for like only by v3.
+RUBRIC_VERSION = "v4"
+RUBRIC_VERSIONS = ("v3", "v4")
 
 # The format gate for `rank_candidates`, fixed 2026-08-27 BEFORE any candidate
 # was run — same discipline as the κ band above, and for the same reason: a
@@ -178,7 +185,8 @@ class Judgement:
 # ─────────────────────────── Betty's stubs ───────────────────────────
 
 def build_judge_prompt(question: str, passages: list[str], answer: str,
-                       rationale: str, axis: str) -> str:
+                       rationale: str, axis: str,
+                       rubric: str = RUBRIC_VERSION) -> str:
     """Render one row into a prompt asking the judge for a binary ruling.
 
     CONCEPT — this function is where a bake-off can quietly become meaningless,
@@ -250,7 +258,20 @@ def build_judge_prompt(question: str, passages: list[str], answer: str,
     passages the judge is looking at.
 
     Bump RUBRIC_VERSION whenever you touch this.
+
+    `rubric` selects the wording. v3's text is frozen: rulings made under it
+    exist, and `tests/test_judge.py` pins it by fingerprint. A new version adds
+    to `RUBRIC_VERSIONS` and branches here; it never edits an older one.
     """
+    if rubric not in RUBRIC_VERSIONS:
+        raise ValueError(f"unknown rubric {rubric!r} — expected one of "
+                         f"{list(RUBRIC_VERSIONS)}")
+    # v4, mirroring labelling guide 0.2 §4.2. Empty under v3.
+    contradicted = "" if rubric == "v3" else """
+     The same holds when a passage CONTRADICTS A DETAIL IN THE QUESTION,
+     meaning both cannot be true. The refusal was then correct (true), even
+     if the answer could be identified without that detail. If the passages
+     simply do not mention the detail, this does not apply: use condition 1."""
     # `grounded` mirrors fixture.py's THE BOUNDARIES block and reads the
     # RATIONALE against its own citations. `refusal_ok` (v3) is the two-pass
     # labelling rule: it reads the PASSAGES and explicitly NOT the rationale —
@@ -271,7 +292,7 @@ Three specific ways a row is false:
 This is INDEPENDENT OF CORRECTNESS. A rationale whose short answer is right is
 still false when it is not verifiable from what it cites. Ask "could a reader
 verify this from the citations given", never "is this answer right".""",
-        "refusal_ok": """true  = the passages do NOT support an answer to the question, so declining was the right call.
+        "refusal_ok": f"""true  = the passages do NOT support an answer to the question, so declining was the right call.
 false = OVER-REFUSAL: the passages DO support an answer and the model refused anyway.
 
 This is a question about the PASSAGES, not about the model's reasoning. Check
@@ -285,7 +306,7 @@ The passages support an answer UNLESS one of these happens:
      missing step only when that detail is needed to choose between
      possible answers.
   2. THE QUESTION IS UNCLEAR, and the passages do not clear it up.
-  3. THE PASSAGES DISAGREE, and nothing says which is right.
+  3. THE PASSAGES DISAGREE, and nothing says which is right.{contradicted}
 
 If none of the three happens, the answer is false (over-refusal).
 
@@ -607,7 +628,7 @@ def require_models(models: list[str]) -> None:
 
 @op
 def judge_one(judge: str, digest: str, item: dict, axis: str,
-              timeout: int = 600) -> Judgement:
+              timeout: int = 600, rubric: str = RUBRIC_VERSION) -> Judgement:
     """One judgement, timed. Traced by Weave when it is live.
 
     The clock wraps the transport call only — prompt building and parsing are
@@ -615,7 +636,7 @@ def judge_one(judge: str, digest: str, item: dict, axis: str,
     throughput comparison that issue #2 says should choose the sweep size.
     """
     prompt = build_judge_prompt(item["question"], item["passages"],
-                                item["answer"], item["rationale"], axis)
+                                item["answer"], item["rationale"], axis, rubric)
     t0 = time.perf_counter()
     reply = ollama_generate(prompt, model=judge, timeout=timeout,
                             max_tokens=JUDGE_MAX_TOKENS)
@@ -711,7 +732,7 @@ def judge_items(gens: list[Generation], corpus: dict) -> list[dict]:
 
 
 def judge_batch(judge: str, items: list[dict], generation_key: str,
-                refresh: bool = False) -> list[Judgement]:
+                refresh: bool = False, rubric: str = RUBRIC_VERSION) -> list[Judgement]:
     """Every row, judged by one candidate, cached under (generations, judge, rubric).
 
     `generation_key` is the generation cache file's stem, so a judgement file
@@ -719,12 +740,12 @@ def judge_batch(judge: str, items: list[dict], generation_key: str,
     swapping a judge invalidates judgements only, never the expensive generations.
     """
     digest = ollama_digest(judge)
-    path = judgement_cache_path(generation_key, judge, RUBRIC_VERSION)
+    path = judgement_cache_path(generation_key, judge, rubric)
 
     def compute():
         js = []
         for i, item in enumerate(items, 1):
-            js.append(judge_one(judge, digest, item, item["axis"]))
+            js.append(judge_one(judge, digest, item, item["axis"], rubric=rubric))
             if i % 10 == 0 or i == len(items):
                 log.info("  %s: judged %d/%d", judge, i, len(items))
         validate(js, judge)     # before the cache write, never after
@@ -1134,7 +1155,7 @@ def report_twopass(title: str, s: dict, note: str | None = None) -> None:
 
 
 def main_twopass(sheet_paths: list[str], judge: str, dataset: str,
-                 refresh: bool = False) -> None:
+                 refresh: bool = False, rubric: str = RUBRIC_VERSION) -> None:
     """Judge every refusal behind each finished two-pass sheet, then score.
 
     Every sheet is opened and checked BEFORE the model is looked for or any
@@ -1163,11 +1184,11 @@ def main_twopass(sheet_paths: list[str], judge: str, dataset: str,
         key = s["gen_path"].stem + s["key_suffix"]
         if key not in rulings:
             rulings[key] = judge_batch(judge, judge_items(s["judged"], corpus), key,
-                                       refresh)
+                                       refresh, rubric)
         s["pairs"] = pair_with_pass_b(s["rows"], rulings[key])
 
     log.info("\n=== judge × pass B (%s, rubric %s) — over-refusal is the positive "
-             "class ===", judge, RUBRIC_VERSION)
+             "class ===", judge, rubric)
     for s in sheets:
         report_twopass(f"{s['annotator']} · guide {s['guide_version']} · "
                        f"{batch_name(s['gen_path'])}", score_twopass(s["pairs"]),
@@ -1252,6 +1273,10 @@ if __name__ == "__main__":
                         "repeatable. Judges the batch's refusals with the one --judge "
                         "given and scores them against pass B. The sheet's name says "
                         "which batch, so no batch flag is taken")
+    p.add_argument("--rubric", choices=RUBRIC_VERSIONS, default=RUBRIC_VERSION,
+                   help="with --sheet: the rubric version to rule under "
+                        f"(default {RUBRIC_VERSION}). Pick the one that states the "
+                        "rule the sheet was labelled under")
     p.add_argument("--refresh", action="store_true", help="re-judge, ignoring the cache")
     p.add_argument("--model", default=BI_ENCODER, help=MODEL_HELP)
     p.add_argument("--generator", default=GENERATOR)
@@ -1271,7 +1296,8 @@ if __name__ == "__main__":
         # bake-off slate is a list of candidates, not a choice.
         if not args.judges or len(args.judges) != 1:
             p.error("--sheet needs exactly one --judge")
-        main_twopass(args.sheets, args.judges[0], args.dataset, args.refresh)
+        main_twopass(args.sheets, args.judges[0], args.dataset, args.refresh,
+                     args.rubric)
         raise SystemExit(0)
     # An explicit action is REQUIRED. `--bakeoff` was parsed and never read, so a
     # bare `python -m retrieval_lab.judge` silently launched a full multi-model
@@ -1282,6 +1308,9 @@ if __name__ == "__main__":
                 "or --sheet PATH to judge a finished two-pass sheet")
     if args.axis and not args.smoke:
         p.error("--axis only applies to --smoke")
+    if args.rubric != RUBRIC_VERSION:
+        p.error("--rubric only applies to --sheet: --bakeoff and --smoke use "
+                f"the current rubric ({RUBRIC_VERSION})")
     main(args.dataset, args.n_queries, args.n_context, args.top_k, args.seed,
          args.judges or CANDIDATES, args.refresh, args.model, args.generator,
          args.smoke, args.exclude, args.axis)
